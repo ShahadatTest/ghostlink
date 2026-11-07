@@ -73,8 +73,10 @@ export class IndexerDatabase {
   #checkpoint(): Snapshot {
     const snapshot = this.#get<Snapshot>("snapshot");
     if (!snapshot || !Array.isArray(snapshot.registryLeaves) || !Array.isArray(snapshot.censusLeaves) ||
+      !Array.isArray(snapshot.registrySlots) || !Array.isArray(snapshot.censusSlots) ||
+      !Array.isArray(snapshot.pendingBindings) || !Array.isArray(snapshot.pendingCensus) ||
       !Array.isArray(snapshot.activity) || !Array.isArray(snapshot.processedTransactions) ||
-      [snapshot.bindings, snapshot.census, snapshot.pockets, snapshot.cursors].some(value => !value || typeof value !== "object" || Array.isArray(value))) {
+      [snapshot.completeBefore, snapshot.bindings, snapshot.census, snapshot.pockets, snapshot.cursors].some(value => !value || typeof value !== "object" || Array.isArray(value))) {
       throw new Error("indexer snapshot is missing or incomplete");
     }
     return snapshot;

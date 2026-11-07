@@ -3,9 +3,11 @@
  * programs emit, feed them through the log decoder into the store, and
  * check the served paths verify against the roots — including over HTTP.
  * Plus the refusal cases: gaps, bad roots, conflicting replays, foreign
- * emitters, unauthenticated webhooks and roots the chain never had.
+ * emitters, unauthenticated webhooks and roots the chain never had, and
+ * the root-history buckets: only leaves of buckets that have ended are
+ * served, against each bucket's final root.
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { once } from "node:events";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -29,10 +31,12 @@ import type { ChainRoots } from "../src/chain-roots.js";
 
 const wallet = new Uint8Array(32).fill(7);
 const mint = new Uint8Array(32).fill(9);
+/** Seeded leaves land in root bucket 0; a horizon of slot 1,000 completes it. */
+const SLOT = 100n;
 
-function registeredLog(leafIndex: bigint, leaf: Uint8Array, root: Uint8Array, w: Uint8Array = wallet): string {
+function registeredLog(leafIndex: bigint, leaf: Uint8Array, root: Uint8Array, w: Uint8Array = wallet, slot = SLOT): string {
   const c = new Uint8Array(32).fill(3);
-  const buf = Buffer.concat([Buffer.from(eventDisc("Registered")), u64(leafIndex), leaf, root, w, c]);
+  const buf = Buffer.concat([Buffer.from(eventDisc("Registered")), u64(leafIndex), leaf, root, w, c, u64(slot)]);
   return `Program data: ${buf.toString("base64")}`;
 }
 
@@ -66,13 +70,13 @@ function seedStore(): { store: IndexerStore; regRoot: string; cenRoot: string; r
   const lReg = registryLeaf(wallet, commitment(s));
   regTree.append(lReg);
   const cenTree = new IncrementalTree();
-  const lCen = censusLeaf(wallet, mint, 42n, 100n);
+  const lCen = censusLeaf(wallet, mint, 42n, SLOT);
   cenTree.append(lCen);
 
   const firstLog = registeredLog(0n, fieldToBytes32(lReg), fieldToBytes32(regTree.root));
   const logs = [
     ...registryLogs([firstLog]),
-    ...censusLogs([snapshotLog(0n, fieldToBytes32(lCen), fieldToBytes32(cenTree.root), 42n, 100n)]),
+    ...censusLogs([snapshotLog(0n, fieldToBytes32(lCen), fieldToBytes32(cenTree.root), 42n, SLOT)]),
   ];
   for (const event of decodeLogs(logs)) store.apply(event);
   return { store, regRoot: regTree.root.toString(), cenRoot: cenTree.root.toString(), regTree, firstLog };
@@ -113,6 +117,10 @@ describe("indexer store", () => {
   });
   it("rebuilds trees from events and serves verifiable paths", () => {
     const { store, regRoot, cenRoot } = seedStore();
+    // Bucket 0 may still change until the horizon passes its last slot.
+    expect(store.recentRoots("registry")).toEqual([]);
+    expect(store.bindings.size).toBe(0);
+    expect(store.advance(1_000)).toBe(true);
     expect(store.recentRoots("registry")).toContain(regRoot);
     expect(store.recentRoots("census")).toContain(cenRoot);
     expect(store.bindings.get(bs58.encode(wallet))?.leafIndex).toBe(0);
@@ -136,6 +144,7 @@ describe("indexer store", () => {
         root: badRoot,
         wallet: bs58.encode(wallet),
         commitment: new Uint8Array(32),
+        slot: SLOT,
       }),
     ).toThrow(/root mismatch/);
     expect(store.registry.nextIndex).toBe(1);
@@ -185,6 +194,7 @@ describe("indexer store", () => {
 
   it("serves roots and paths over HTTP", async () => {
     const { store, regRoot } = seedStore();
+    store.advance(1_000);
     await withServer(store, {}, async (base) => {
       const roots = (await (await fetch(`${base}/roots/registry`)).json()) as { roots: string[]; nextIndex: number };
       expect(roots.roots).toContain(regRoot);
@@ -206,6 +216,7 @@ describe("indexer store", () => {
   it("cannot bypass the leaf page cap using negative or fractional limits", async () => {
     const store = new IndexerStore();
     store.registryLeaves = Array.from({ length: 6000 }, () => "1");
+    (store as unknown as { completed: Record<string, number> }).completed.registry = 6000;
     await withServer(store, {}, async (base) => {
       for (const limit of ["-1", "0", "1.5", "NaN", "Infinity"]) {
         expect((await fetch(`${base}/leaves/registry?limit=${limit}`)).status).toBe(400);
@@ -246,7 +257,7 @@ describe("indexer store", () => {
     const { store, regTree } = seedStore();
     const l1 = registryLeaf(new Uint8Array(32).fill(8), commitment(secretToField(new Uint8Array(32).fill(2))));
     regTree.append(l1);
-    const chainRoots = { contains: async () => false } as unknown as ChainRoots;
+    const chainRoots = { accepts: async () => false } as unknown as ChainRoots;
     const body = JSON.stringify({ logs: registryLogs([registeredLog(1n, fieldToBytes32(l1), fieldToBytes32(regTree.root))]) });
     await withServer(store, { webhookSecret: "s3cret", chainRoots }, async (base) => {
       const res = await fetch(`${base}/webhook`, {
@@ -256,6 +267,19 @@ describe("indexer store", () => {
       });
       expect(await res.json()).toEqual({ applied: 0, ignored: 1 });
       expect(store.registry.nextIndex).toBe(1);
+    });
+  });
+
+  it("webhook: asks the chain to vouch for each tree event by root, leaf index and slot", async () => {
+    const { store, regTree } = seedStore();
+    const l1 = registryLeaf(new Uint8Array(32).fill(8), commitment(secretToField(new Uint8Array(32).fill(2))));
+    regTree.append(l1);
+    const accepts = vi.fn(async () => true);
+    const body = JSON.stringify({ logs: registryLogs([registeredLog(1n, fieldToBytes32(l1), fieldToBytes32(regTree.root))]) });
+    await withServer(store, { webhookSecret: "s3cret", chainRoots: { accepts } as unknown as ChainRoots }, async (base) => {
+      const res = await fetch(`${base}/webhook`, { method: "POST", headers: { "content-type": "application/json", authorization: "s3cret" }, body });
+      expect(await res.json()).toEqual({ applied: 1, ignored: 0 });
+      expect(accepts).toHaveBeenCalledWith("registry", fieldToBytes32(regTree.root), 1n, SLOT);
     });
   });
 
@@ -288,5 +312,119 @@ describe("indexer store", () => {
       expect(await (await post("transaction")).json()).toEqual({ applied: 0, ignored: 1 });
       expect(store.activity).toHaveLength(1);
     });
+  });
+});
+
+describe("completed root buckets", () => {
+  /** A registration of a fresh wallet at `slot`, appended to `tree` (the chain's view). */
+  function registration(tree: IncrementalTree, n: number, slot: bigint) {
+    const w = new Uint8Array(32).fill(n);
+    const leaf = registryLeaf(w, commitment(secretToField(new Uint8Array(32).fill(n))));
+    const index = tree.append(leaf);
+    const event = decodeLogs(registryLogs([registeredLog(BigInt(index), fieldToBytes32(leaf), fieldToBytes32(tree.root), w, slot)]))[0]!;
+    return { wallet: bs58.encode(w), root: tree.root, event };
+  }
+
+  it("serves only leaves whose bucket has ended, against each bucket's final root", async () => {
+    const store = new IndexerStore(), tree = new IncrementalTree();
+    // Bucket 10 (slots 1,500-1,649) gets two registrations, bucket 11 one.
+    const a = registration(tree, 21, 1_500n), b = registration(tree, 22, 1_520n), c = registration(tree, 23, 1_650n);
+    store.apply(a.event); store.apply(b.event);
+    expect(store.completedSize("registry")).toBe(0);
+    expect(store.recentRoots("registry")).toEqual([]);
+    // A leaf in bucket 11 proves bucket 10 has ended, even with no poller horizon.
+    store.apply(c.event);
+    expect(store.completedSize("registry")).toBe(2);
+    expect(store.recentRoots("registry")).toEqual([b.root.toString()]);
+    expect(store.bindings.has(b.wallet)).toBe(true);
+    expect(store.bindings.has(c.wallet)).toBe(false);
+    await withServer(store, {}, async (base) => {
+      expect(await (await fetch(`${base}/roots/registry`)).json())
+        .toEqual({ tree: "registry", roots: [b.root.toString()], nextIndex: 2, completeBeforeSlot: "1650" });
+      const path = (await (await fetch(`${base}/path/registry/0`)).json()) as { root: string; siblings: string[] };
+      expect(path.root).toBe(b.root.toString());
+      expect(IncrementalTree.verify(BigInt(store.registryLeaves[0]!), { index: 0, siblings: path.siblings.map(BigInt) }, b.root)).toBe(true);
+      const pending = await fetch(`${base}/path/registry/2`);
+      expect(pending.status).toBe(404);
+      expect(await pending.json()).toMatchObject({ completesAfterSlot: "1799" });
+      expect((await fetch(`${base}/path/registry/3`)).status).toBe(404);
+      const binding = await fetch(`${base}/registry/binding/${c.wallet}`);
+      expect(binding.status).toBe(404);
+      expect(await binding.json()).toMatchObject({ completesAfterSlot: "1799" });
+      expect(await (await fetch(`${base}/registry/binding/${b.wallet}`)).json()).toMatchObject({ leafIndex: 1, slot: "1520" });
+      expect(await (await fetch(`${base}/leaves/registry`)).json())
+        .toMatchObject({ from: 0, nextIndex: 2, leaves: store.registryLeaves.slice(0, 2), completeBeforeSlot: "1650" });
+    });
+    // The poller horizon completes bucket 11 once every transaction through its last slot is applied.
+    expect(store.advance(1_798)).toBe(false);
+    expect(store.advance(1_799)).toBe(true);
+    expect(store.advance(1_799)).toBe(false);
+    expect(store.recentRoots("registry")).toEqual([b.root.toString(), c.root.toString()]);
+    expect(store.bindings.get(c.wallet)?.slot).toBe("1650");
+    expect(store.completedPath("registry", 2).root).toBe(c.root);
+  });
+
+  it("answers census/latest with the newest snapshot of a completed bucket", async () => {
+    const store = new IndexerStore(), tree = new IncrementalTree();
+    const snap = (amount: bigint, slot: bigint) => {
+      const leaf = censusLeaf(wallet, mint, amount, slot);
+      const index = tree.append(leaf);
+      store.apply(decodeLogs(censusLogs([snapshotLog(BigInt(index), fieldToBytes32(leaf), fieldToBytes32(tree.root), amount, slot)]))[0]!);
+    };
+    const query = `wallet=${bs58.encode(wallet)}&mint=${bs58.encode(mint)}`;
+    snap(5n, 3_000n); // bucket 20
+    await withServer(store, {}, async (base) => {
+      const pending = await fetch(`${base}/census/latest?${query}`);
+      expect(pending.status).toBe(404);
+      expect(await pending.json()).toMatchObject({ completesAfterSlot: "3149" });
+      snap(9n, 3_200n); // bucket 21: bucket 20 has ended, 21 has not
+      expect(await (await fetch(`${base}/census/latest?${query}`)).json()).toMatchObject({ leafIndex: 0, amount: "5", slot: "3000" });
+      store.advance(3_299);
+      expect(await (await fetch(`${base}/census/latest?${query}`)).json()).toMatchObject({ leafIndex: 1, amount: "9", slot: "3200" });
+    });
+  });
+
+  it("keeps one root per bucket within the ring's 128 entries", () => {
+    const store = new IndexerStore(), tree = new IncrementalTree();
+    const finals: string[] = [], superseded: string[] = [];
+    for (let bucket = 0; bucket < 130; bucket++) {
+      // Two registrations in the newest buckets: only the second root is a bucket root.
+      if (bucket >= 126) { store.apply(registration(tree, 200 + bucket - 126, BigInt(bucket * 150)).event); superseded.push(tree.root.toString()); }
+      store.apply(registration(tree, 1 + bucket, BigInt(bucket * 150 + 50)).event);
+      finals.push(tree.root.toString());
+    }
+    store.advance(130 * 150);
+    expect(store.recentRoots("registry")).toEqual(finals.slice(-128));
+    expect(store.recentRoots("registry", 3)).toEqual(finals.slice(-3));
+    expect(superseded.some(root => store.recentRoots("registry").includes(root))).toBe(false);
+  }, 30_000);
+
+  it("refuses a leaf whose slot runs backwards, and state without leaf slots", () => {
+    const store = new IndexerStore(), tree = new IncrementalTree();
+    const a = registration(tree, 31, 900n), b = registration(tree, 32, 899n);
+    store.apply(a.event);
+    expect(() => store.apply(b.event)).toThrow(/slot regressed/);
+    expect(store.registry.nextIndex).toBe(1);
+    const saved = JSON.parse(JSON.stringify(store.snapshot())) as Record<string, unknown>;
+    const copy = new IndexerStore(); copy.restore(saved as never);
+    expect(copy.pendingBindings).toHaveLength(1);
+    expect(copy.completeBeforeSlot("registry")).toBe(store.completeBeforeSlot("registry"));
+    delete saved.registrySlots;
+    expect(() => new IndexerStore().restore(saved as never)).toThrow(/slots/);
+  });
+
+  it("restores served and pending entries exactly", () => {
+    const store = new IndexerStore(), tree = new IncrementalTree();
+    for (const [n, slot] of [[41, 10n], [42, 160n], [43, 170n], [44, 400n]] as const) store.apply(registration(tree, n, slot).event);
+    store.advance(299);
+    const copy = new IndexerStore();
+    copy.restore(JSON.parse(JSON.stringify(store.snapshot())));
+    for (const s of [store, copy]) {
+      expect(s.completedSize("registry")).toBe(3);
+      expect(s.bindings.size).toBe(3);
+      expect(s.pendingBindings.map(p => p.entry.leafIndex)).toEqual([3]);
+    }
+    expect(copy.recentRoots("registry")).toEqual(store.recentRoots("registry"));
+    expect(copy.completedRoot("registry")).toBe(store.completedRoot("registry"));
   });
 });

@@ -49,7 +49,7 @@ describe("poller transaction ordering and confirmation", () => {
     const poller = new Poller(connection as unknown as Connection, store, [REGISTRY]);
     await expect(poller.tick()).rejects.toThrow(/metadata/);
     expect(store.cursors.size).toBe(0);
-    const payload = Buffer.concat([eventDisc("Registered"), Buffer.alloc(136)]).toString("base64");
+    const payload = Buffer.concat([eventDisc("Registered"), Buffer.alloc(144)]).toString("base64");
     connection.getTransaction.mockResolvedValue({ slot: 1, transaction: { signatures: ["A"] }, meta: { err: { InstructionError: [1, "Custom"] },
       logMessages: frameAsProgramLogs(REGISTRY.toBase58(), [`Program data: ${payload}`]) } });
     await expect(poller.tick()).rejects.toThrow(/status/);

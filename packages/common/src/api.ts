@@ -6,12 +6,19 @@
 
 export type TreeName = "registry" | "census";
 
-/** GET /roots/:tree */
+/**
+ * GET /roots/:tree. An indexer serves only roots of completed root-history
+ * buckets (`ROOT_BUCKET_SLOTS`): the on-chain ring keeps each bucket's final
+ * root, while the newest entry can change until its bucket ends.
+ */
 export interface RootsResponse {
   tree: TreeName;
-  /** Most recent root last; all as decimal field elements. */
+  /** One root per completed bucket, most recent last; all as decimal field elements. */
   roots: string[];
+  /** Leaves covered by the most recent root. */
   nextIndex: number;
+  /** Every leaf appended before this slot is covered (decimal); later leaves wait for their bucket to end. */
+  completeBeforeSlot: string;
 }
 
 /** GET /leaves/:tree?from=&limit= — a page of leaves, for building witnesses locally. */
@@ -20,7 +27,9 @@ export interface LeavesResponse {
   from: number;
   /** Decimal field elements in append order. */
   leaves: string[];
+  /** Leaves of completed buckets only, so a local rebuild ends on a provable root. */
   nextIndex: number;
+  completeBeforeSlot: string;
 }
 
 /** GET /path/:tree/:leafIndex */
@@ -28,7 +37,7 @@ export interface PathResponse {
   tree: TreeName;
   index: number;
   siblings: string[];
-  /** The root this path hashes to (decimal). */
+  /** The root this path hashes to (decimal): the most recent completed bucket's root. */
   root: string;
 }
 
@@ -45,7 +54,18 @@ export interface CensusLatestResponse {
 export interface BindingResponse {
   leafIndex: number;
   commitment: string; // hex32
+  /** Registration slot (decimal). */
   slot: string;
+}
+
+/**
+ * HTTP 404 body for a registration or snapshot the indexer has seen but
+ * cannot serve yet: its root bucket has not ended. Retry after the slot.
+ */
+export interface PendingLeafResponse {
+  error: string;
+  /** Last slot of the leaf's root bucket (decimal). */
+  completesAfterSlot: string;
 }
 
 /** POST /register */

@@ -97,7 +97,7 @@ describe("durable bounded indexer backfill", () => {
     expect(() => store.checkpointTransaction("A", [opened], [REGISTRY.toBase58()], s => db.complete("A", s))).toThrow();
     expect(store.pockets.size).toBe(0); expect(store.cursors.size).toBe(0); expect(db.pending()).toBe(1); expect(db.snapshot()!.pockets).toEqual({});
     fault.exec("DROP TRIGGER disk_failure");
-    const invalid = { kind: "Registered" as const, wallet: "wallet", commitment: new Uint8Array(32), leafIndex: 2n, leaf: new Uint8Array(32), root: new Uint8Array(32) };
+    const invalid = { kind: "Registered" as const, wallet: "wallet", commitment: new Uint8Array(32), leafIndex: 2n, leaf: new Uint8Array(32), root: new Uint8Array(32), slot: 1n };
     expect(() => store.checkpointTransaction("A", [opened, invalid], [REGISTRY.toBase58()], s => db.complete("A", s))).toThrow(/gap/);
     expect(store.pockets.size).toBe(0); expect(store.activity).toEqual([]); expect(db.pending()).toBe(1);
     store.checkpointTransaction("A", [opened], [REGISTRY.toBase58()], s => db.complete("A", s));

@@ -101,6 +101,7 @@ describe("event decode", () => {
     Buffer.alloc(32, 5),
     Buffer.alloc(32, 6),
     Buffer.alloc(32, 7),
+    Buffer.from([0x2a, 1, 0, 0, 0, 0, 0, 0]), // slot 298
   ]);
   const line = `Program data: ${registered.toString("base64")}`;
 
@@ -108,6 +109,9 @@ describe("event decode", () => {
     const events = decodeLogs(frameAsProgramLogs(REGISTRY_PROGRAM_ID, [line]));
     expect(events).toHaveLength(1);
     expect(events[0]!.kind).toBe("Registered");
+    expect(events[0]!.kind === "Registered" && events[0]!.slot).toBe(298n);
+    // The pre-bucket layout without a slot is refused, not misread.
+    expect(decodeEventData(registered.subarray(0, registered.length - 8))).toBeNull();
   });
 
   it("ignores malformed payloads and unframed lines", () => {

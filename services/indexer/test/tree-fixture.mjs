@@ -7,7 +7,8 @@ import { REGISTRY, CENSUS } from "@ghostlink/service-kit";
 export function emptyTreeAccounts(addresses) {
   const ids = [PublicKey.findProgramAddressSync([Buffer.from("tree")], REGISTRY)[0].toBase58(),
     PublicKey.findProgramAddressSync([Buffer.from("census")], CENSUS)[0].toBase58()];
-  const data = Buffer.alloc(16 + TREE_DEPTH * 32 + ROOT_HISTORY_SIZE * 32 + 8);
+  // Layout: discriminator, next_index, frontier, roots, cursor + padding, one slot per root.
+  const data = Buffer.alloc(16 + TREE_DEPTH * 32 + ROOT_HISTORY_SIZE * 32 + 8 + ROOT_HISTORY_SIZE * 8);
   createHash("sha256").update("account:TreeState").digest().copy(data, 0, 0, 8);
   Buffer.from(fieldToBytes32(new IncrementalTree().root)).copy(data, 16 + TREE_DEPTH * 32);
   if (addresses.length !== 2 || addresses.some((address, i) => address !== ids[i])) throw new Error("unexpected tree fixture address");

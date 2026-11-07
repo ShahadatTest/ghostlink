@@ -15,13 +15,29 @@ import { buildServer } from "../src/server.js";
 const cleanup: (() => void)[] = [];
 afterEach(() => { for (const close of cleanup.reverse()) close(); cleanup.length = 0; });
 const rootsOffset = 16 + 32 * TREE_DEPTH;
-function account(tree: IncrementalTree, owner = REGISTRY) {
-  const data = Buffer.alloc(rootsOffset + 32 * ROOT_HISTORY_SIZE + 8);
+const cursorOffset = rootsOffset + 32 * ROOT_HISTORY_SIZE;
+const slotsOffset = cursorOffset + 8;
+/**
+ * A TreeState account whose ring received `entries` in order (one per
+ * bucket, oldest first, wrapping like the program's ring); by default one
+ * entry holding the tree's current root.
+ */
+function account(tree: IncrementalTree, owner = REGISTRY, entries: { root: bigint; slot: number }[] = [{ root: tree.root, slot: 5 }]) {
+  const data = Buffer.alloc(slotsOffset + 8 * ROOT_HISTORY_SIZE);
   createHash("sha256").update("account:TreeState").digest().copy(data, 0, 0, 8);
   data.writeBigUInt64LE(BigInt(tree.nextIndex), 8);
-  data[rootsOffset + 32 * ROOT_HISTORY_SIZE] = tree.nextIndex % ROOT_HISTORY_SIZE;
-  Buffer.from(fieldToBytes32(tree.root)).copy(data, rootsOffset + 32 * (tree.nextIndex % ROOT_HISTORY_SIZE));
+  entries.forEach(({ root, slot }, i) => {
+    const position = i % ROOT_HISTORY_SIZE;
+    Buffer.from(fieldToBytes32(root)).copy(data, rootsOffset + 32 * position);
+    data.writeBigUInt64LE(BigInt(slot), slotsOffset + 8 * position);
+  });
+  data[cursorOffset] = (entries.length - 1) % ROOT_HISTORY_SIZE;
   return { owner, data, executable: false, lamports: 1, rentEpoch: 0 };
+}
+/** The Registered event the registry emits for `tree`'s newest leaf. */
+function registered(tree: IncrementalTree, slot: number) {
+  return { kind: "Registered" as const, leafIndex: BigInt(tree.nextIndex - 1), leaf: fieldToBytes32(tree.leafAt(tree.nextIndex - 1)!),
+    root: fieldToBytes32(tree.root), wallet: "wallet", commitment: new Uint8Array(32), slot: BigInt(slot) };
 }
 function world(options: Partial<PollerOptions> = {}) {
   const dir = mkdtempSync(join(tmpdir(), "indexer-reconciliation-")), key = randomBytes(32), path = join(dir, "state.sqlite");
@@ -53,7 +69,8 @@ it("does not declare an empty RPC history ready when the finalized tree has a le
 });
 
 it("refuses a conflicting root even when leaf counts agree", async () => {
-  const w = world(); w.registry.append(7n); w.store.registry.append(8n); w.store.registryLeaves.push("8"); w.database.save(w.store.snapshot());
+  const w = world(); w.registry.append(7n);
+  const other = new IncrementalTree(); other.append(8n); w.store.apply(registered(other, 5)); w.database.save(w.store.snapshot());
   await expect(w.poller.tick()).rejects.toThrow(/match finalized/);
   expect(w.database.through()).toBe(0); expect(w.database.scan()!.treeAnchor!.registry.nextIndex).toBe(1);
 });
@@ -121,21 +138,42 @@ it("does not silently attach current roots to a legacy in-progress scan", async 
   expect(w.connection.getMultipleAccountsInfoAndContext).not.toHaveBeenCalled();
 });
 
-it.each([127, 128])("reports usable roots only while the saved root survives %i later appends", async count => {
-  const w = world();
+/**
+ * One registration at slot 155 (bucket 1), finalized by an anchor at slot 400: the indexer serves
+ * bucket 1's root. The confirmed ring then shows `later` buckets after it.
+ */
+function servedWorld(later: number, tamper?: "root" | "missing") {
+  const w = world(); w.registry.append(7n);
+  const served = w.registry.root;
+  w.store.apply(registered(w.registry, 155)); w.database.save(w.store.snapshot());
   w.connection.getMultipleAccountsInfoAndContext.mockImplementation(async (_addresses, config) => {
-    const a = account(w.registry), b = account(w.census, CENSUS);
-    if (config?.commitment === "confirmed") {
-      a.data.writeBigUInt64LE(BigInt(count), 8); a.data[rootsOffset + 32 * ROOT_HISTORY_SIZE] = count % ROOT_HISTORY_SIZE;
-      if (count === 128) Buffer.from(fieldToBytes32(123n)).copy(a.data, rootsOffset);
+    if (config?.commitment !== "confirmed") {
+      return { context: { slot: 400 }, value: [account(w.registry, REGISTRY, [{ root: served, slot: 155 }]), account(w.census, CENSUS)] };
     }
-    return { context: { slot: 10 }, value: [a, b] };
+    const chain = new IncrementalTree(); chain.append(7n);
+    const entries = [{ root: tamper === "root" ? 99n : served, slot: 155 }];
+    for (let b = 2; b <= later + 1; b++) { chain.append(BigInt(1000 + b)); entries.push({ root: chain.root, slot: b * 150 + 7 }); }
+    // An older bucket's entry where bucket 1's should be: history the indexer never saw.
+    if (tamper === "missing") entries.splice(0, 1, { root: 98n, slot: 3 });
+    return { context: { slot: 401 + later * 150 }, value: [account(chain, REGISTRY, entries), account(w.census, CENSUS)] };
   });
-  await w.poller.tick(); expect(w.database.through()).toBe(10); expect(w.poller.status.rootsUsable).toBe(count < 128);
+  return w;
+}
+
+it.each([127, 128])("reports usable roots only while the served bucket survives %i later buckets", async later => {
+  const w = servedWorld(later);
+  await w.poller.tick(); expect(w.database.through()).toBe(400); expect(w.store.completedSize("registry")).toBe(1);
+  expect(w.poller.status.rootsUsable).toBe(later < 128);
   const server = buildServer(w.store, { database: w.database, poller: w.poller.status });
   server.listen(0, "127.0.0.1"); await once(server, "listening");
-  try { expect((await fetch(`http://127.0.0.1:${(server.address() as { port: number }).port}/ready`)).status).toBe(count < 128 ? 200 : 503); }
+  try { expect((await fetch(`http://127.0.0.1:${(server.address() as { port: number }).port}/ready`)).status).toBe(later < 128 ? 200 : 503); }
   finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
+});
+
+it.each(["root", "missing"] as const)("refuses a confirmed ring that contradicts the served bucket (%s)", async tamper => {
+  const w = servedWorld(3, tamper);
+  await expect(w.poller.tick()).rejects.toThrow(tamper === "root" ? /contradicts an indexed bucket root/ : /no entry for an indexed bucket/);
+  expect(w.poller.status.rootsUsable).toBe(false);
 });
 
 it("preserves a reconciled checkpoint on probe outage and rejects regressing confirmed evidence", async () => {

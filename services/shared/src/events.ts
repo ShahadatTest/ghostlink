@@ -64,6 +64,8 @@ export interface RegisteredEvent {
   root: Uint8Array;
   wallet: string;
   commitment: Uint8Array;
+  /** Slot of the append; it places the leaf in a root-history bucket. */
+  slot: bigint;
 }
 
 export interface SnapshotTakenEvent {
@@ -146,6 +148,7 @@ const DISCS: [string, (r: Reader) => GhostLinkEvent][] = [
       root: r.bytes32(),
       wallet: r.pubkey(),
       commitment: r.bytes32(),
+      slot: r.u64(),
     }),
   ],
   [

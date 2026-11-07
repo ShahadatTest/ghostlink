@@ -39,6 +39,7 @@ export class Poller {
     this.database = options.database ?? new IndexerDatabase(":memory:", randomBytes(32), JSON.stringify(["ephemeral", programs.map(p => p.toBase58()), commitment]));
     if (!options.database) this.database.save(store.snapshot()); // Explicit ephemeral fixture only.
     store.restore(this.database.snapshot());
+    store.advance(this.database.through()); // Buckets that ended by the last completed scan are servable.
   }
   drain(): void { this.draining = true; }
   get idle(): boolean { return !this.status.inFlight; }
@@ -102,8 +103,10 @@ export class Poller {
       this.status.pendingTransactions = this.database.pending(); this.status.catchingUp = !complete;
       this.status.appliedThroughSlot = this.database.through();
       if (complete) {
+        this.store.advance(this.status.appliedThroughSlot);
         if (this.status.rootReconciliationRequired && available()) {
-          const evidence = await rootsUsable(this.connection, anchor!, this.confirmedRootSlot);
+          const evidence = await rootsUsable(this.connection, anchor!, this.confirmedRootSlot,
+            { registry: this.store.servedRoot("registry"), census: this.store.servedRoot("census") });
           this.confirmedRootSlot = evidence.slot; this.status.rootsUsable = evidence.usable;
           this.status.rootsCheckedAt = new Date().toISOString();
         }

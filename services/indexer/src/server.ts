@@ -1,8 +1,13 @@
-/** HTTP surface of the indexer (wire shapes in @ghostlink/common api.ts). */
+/**
+ * HTTP surface of the indexer (wire shapes in @ghostlink/common api.ts).
+ * Roots, paths, leaves, bindings and census snapshots cover completed
+ * root-history buckets only (see store.ts): a leaf whose bucket has not
+ * ended answers 404 with the slot after which to retry.
+ */
 import type { Server } from "node:http";
 import { timingSafeEqual } from "node:crypto";
 import { HttpError, Router, decodeLogs, type GhostLinkEvent } from "@ghostlink/service-kit";
-import type { IndexerStore } from "./store.js";
+import type { IndexerStore, TreeKind } from "./store.js";
 import type { PollerStatus } from "./poller.js";
 import type { IndexerDatabase } from "./database.js";
 import type { ChainRoots } from "./chain-roots.js";
@@ -13,7 +18,7 @@ export interface ServerOptions {
    * the `authHeader` of the webhook). Without it POST /webhook is off.
    */
   webhookSecret?: string;
-  /** When set, every tree event's root must be in the on-chain ring. */
+  /** When set, every tree event must be vouched for by the on-chain ring (`ChainRoots.accepts`). */
   chainRoots?: ChainRoots;
   poller?: PollerStatus;
   database?: IndexerDatabase;
@@ -47,6 +52,7 @@ export function buildServer(store: IndexerStore, options: ServerOptions = {}): S
       ok: !options.poller || options.poller.lastError === null,
       registryLeaves: store.registryLeaves.length,
       censusLeaves: store.censusLeaves.length,
+      servedLeaves: { registry: store.completedSize("registry"), census: store.completedSize("census") },
       webhook: Boolean(options.webhookSecret),
       poller: options.poller ?? null,
     },
@@ -54,28 +60,30 @@ export function buildServer(store: IndexerStore, options: ServerOptions = {}): S
 
   router.get("/roots/:tree", async ({ params }) => {
     requireReconciled();
-    const tree = params.tree === "registry" ? "registry" : params.tree === "census" ? "census" : null;
+    const tree = treeName(params.tree);
     if (!tree) return { status: 404, json: { error: "unknown tree" } };
-    const t = tree === "registry" ? store.registry : store.census;
     return {
-      json: { tree, roots: store.recentRoots(tree), nextIndex: t.nextIndex },
+      json: { tree, roots: store.recentRoots(tree), nextIndex: store.completedSize(tree),
+        completeBeforeSlot: String(store.completeBeforeSlot(tree)) },
     };
   });
 
   router.get("/path/:tree/:leafIndex", async ({ params }) => {
     requireReconciled();
-    const tree = params.tree === "registry" ? store.registry : params.tree === "census" ? store.census : null;
+    const tree = treeName(params.tree);
     if (!tree) return { status: 404, json: { error: "unknown tree" } };
     if (!/^(0|[1-9][0-9]{0,15})$/.test(params.leafIndex ?? "")) return { status: 400, json: { error: "bad leaf index" } };
     const index = Number(params.leafIndex);
-    if (index >= tree.nextIndex) return { status: 404, json: { error: "no such leaf" } };
-    const path = tree.path(index);
+    const pending = store.completesAfterSlot(tree, index);
+    if (pending !== undefined) return notYetServed(pending);
+    if (index >= store.completedSize(tree)) return { status: 404, json: { error: "no such leaf" } };
+    const path = store.completedPath(tree, index);
     return {
       json: {
-        tree: params.tree,
+        tree,
         index: path.index,
         siblings: path.siblings.map((s) => s.toString()),
-        root: tree.root.toString(),
+        root: path.root.toString(),
       },
     };
   });
@@ -86,29 +94,41 @@ export function buildServer(store: IndexerStore, options: ServerOptions = {}): S
    */
   router.get("/leaves/:tree", async ({ params, query }) => {
     requireReconciled();
-    const leaves = params.tree === "registry" ? store.registryLeaves : params.tree === "census" ? store.censusLeaves : null;
-    if (!leaves) return { status: 404, json: { error: "unknown tree" } };
+    const tree = treeName(params.tree);
+    if (!tree) return { status: 404, json: { error: "unknown tree" } };
+    const leaves = tree === "registry" ? store.registryLeaves : store.censusLeaves;
+    const served = store.completedSize(tree);
     const from = pageInteger(query.get("from"), 0, 0, Number.MAX_SAFE_INTEGER, "from");
     const limit = pageInteger(query.get("limit"), 5000, 1, 5000, "limit");
     return {
-      json: { tree: params.tree, from, leaves: leaves.slice(from, from + limit), nextIndex: leaves.length },
+      json: { tree, from, leaves: leaves.slice(from, Math.min(from + limit, served)), nextIndex: served,
+        completeBeforeSlot: String(store.completeBeforeSlot(tree)) },
     };
   });
 
   router.get("/registry/binding/:wallet", async ({ params }) => {
     requireReconciled();
     const binding = store.bindings.get(params.wallet ?? "");
-    if (!binding) return { status: 404, json: { error: "not registered" } };
-    return { json: { leafIndex: binding.leafIndex, commitment: binding.commitmentHex, slot: "0" } };
+    if (!binding) {
+      const pending = store.pendingBinding(params.wallet ?? "");
+      if (pending) return notYetServed(store.completesAfterSlot("registry", pending.leafIndex)!);
+      return { status: 404, json: { error: "not registered" } };
+    }
+    return { json: { leafIndex: binding.leafIndex, commitment: binding.commitmentHex, slot: binding.slot } };
   });
 
+  /** The newest snapshot a prover can use now, i.e. the newest of a completed bucket. */
   router.get("/census/latest", async ({ query }) => {
     requireReconciled();
     const wallet = query.get("wallet");
     const mint = query.get("mint");
     if (!wallet || !mint) return { status: 400, json: { error: "wallet and mint required" } };
     const entry = store.latestCensus.get(`${wallet}:${mint}`);
-    if (!entry) return { status: 404, json: { error: "no snapshot" } };
+    if (!entry) {
+      const pending = store.pendingSnapshot(`${wallet}:${mint}`);
+      if (pending) return notYetServed(store.completesAfterSlot("census", pending.leafIndex)!);
+      return { status: 404, json: { error: "no snapshot" } };
+    }
     return { json: entry };
   });
 
@@ -209,9 +229,19 @@ function pageInteger(value: string | null, fallback: number, minimum: number, ma
 }
 
 async function rootOnChain(chain: ChainRoots, event: GhostLinkEvent): Promise<boolean> {
-  if (event.kind === "Registered") return chain.contains("registry", event.root);
-  if (event.kind === "SnapshotTaken") return chain.contains("census", event.root);
+  if (event.kind === "Registered") return chain.accepts("registry", event.root, event.leafIndex, event.slot);
+  if (event.kind === "SnapshotTaken") return chain.accepts("census", event.root, event.leafIndex, event.slot);
   return true;
+}
+
+function treeName(value: string | undefined): TreeKind | null {
+  return value === "registry" || value === "census" ? value : null;
+}
+
+/** 404 for a leaf the indexer holds whose root bucket has not ended yet. */
+function notYetServed(completesAfterSlot: number) {
+  return { status: 404, json: { error: "not yet in a completed root bucket; retry after the slot",
+    completesAfterSlot: String(completesAfterSlot) } };
 }
 
 function authorized(header: string | undefined, secret: string): boolean {
