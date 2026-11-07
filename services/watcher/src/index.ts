@@ -1,5 +1,5 @@
 /**
- * The watcher / notifier / timelock crank (build plan section 7).
+ * The watcher / notifier / timelock crank.
  *
  * In plain language: the one thing an attacker with a stolen secret must
  * do loudly is propose a home-address change, because it waits 24 hours.

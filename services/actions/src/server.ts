@@ -1,5 +1,5 @@
 /**
- * Solana Actions (Blinks) for funding pockets (build plan 4.3).
+ * Solana Actions (Blinks) for funding pockets.
  *
  * GET returns the action metadata wallets unfurl; POST returns an
  * unsigned deposit transaction for the USER's wallet to simulate and

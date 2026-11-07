@@ -1,6 +1,6 @@
 /**
- * The localnet end-to-end (build plan, test layer 4 — on a REAL
- * validator, through the REAL services, using the REAL SDK):
+ * The localnet end-to-end (the top test layer — on a REAL validator,
+ * through the REAL services, using the REAL SDK):
  *
  *   1. initialize both trees
  *   2. register a wallet through the relayer (true secret derivation:
@@ -274,7 +274,8 @@ async function main() {
       return { proof: proof as object, publicSignals: publicSignals as string[] };
     },
   };
-  const origin = "https://demo.ghostlink.dev";
+  // A reserved test domain (RFC 6761): nothing on chain or in committed fixtures depends on it.
+  const origin = "https://demo.ghostlink.test";
   const gl = await GhostLink.init({
     cluster: "localnet",
     indexer: indexerUrl,

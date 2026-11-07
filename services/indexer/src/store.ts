@@ -2,10 +2,14 @@
  * The indexer's state: both Merkle trees rebuilt leaf by leaf from
  * events, plus lookup tables for bindings and latest census snapshots.
  *
- * Storage is in-memory with an optional JSON snapshot on disk — the
- * whole store is rebuildable from chain data at any time, which is the
- * point: this service carries no trust (threat model). A Postgres
- * adapter is a deployment option tracked for M2 (docs/adr/0001).
+ * This derived state lives in memory. The hosted entry point persists it
+ * through `saveCheckpoint` into the encrypted SQLite checkpoint
+ * (database.ts), committed together with the scan spool. The optional
+ * JSON snapshot path (`persistPath`/`load`) is a local development and
+ * test facility only; the hosted entry point refuses it (PERSIST_PATH).
+ * Everything here is rebuildable from finalized chain history, and
+ * clients verify served roots against the chain: this service carries
+ * no trust.
  *
  * Every tree append is checked BEFORE it happens: an event whose index
  * or root does not chain leaves the store untouched, and a redelivery of
