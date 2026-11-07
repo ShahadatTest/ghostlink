@@ -5,13 +5,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Keypair, PublicKey, SystemProgram, Transaction, type SignatureStatus } from "@solana/web3.js";
 import { conservativePolicy, domainHash, fieldToBytes32, intentHash, policyHash } from "@ghostlink/common";
-import { BorshWriter, POCKET, pocketPda, writePolicy } from "@ghostlink/service-kit";
+import { POCKET, encodePocketAccount, pocketPda } from "@ghostlink/service-kit";
 import { ed25519 } from "@noble/curves/ed25519";
 import bs58 from "bs58";
 import { SubmissionJournal, type PreparedTransaction } from "../src/journal.js";
 import { SubmissionCoordinator, identityFor, type SubmissionChain } from "../src/submission.js";
 import type { ValidatedIntent } from "../src/validate.js";
-import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
 
@@ -37,13 +36,11 @@ function world() {
   let status: SignatureStatus | null = null, validHash = true, accountContext = 100;
   let finalizedContext: number | undefined;
   const account = () => {
-    const w = new BorshWriter().fixed(createHash("sha256").update("account:PocketV3").digest().subarray(0, 8))
-      .fixed(fieldToBytes32(23n)).fixed(fieldToBytes32(domainHash("https://bot.example.com"))).fixed(solver.publicKey.toBytes())
-      .u8(0).fixed(Buffer.concat([currentSession.publicKey.toBuffer(), Buffer.alloc(1)])).u64(expiry);
-    writePolicy(w, policy); w.u8(0).u64(0n).u64(0n);
-    const bitmap = new Uint8Array(256); if (used) bitmap[0] = 128;
-    w.fixed(bitmap).u8(PublicKey.findProgramAddressSync([Buffer.from("pocket"), Buffer.from(fieldToBytes32(23n))], POCKET)[1]).u64(maximumExpiry).u64(0n).u64(0n);
-    const data = Buffer.alloc(3293); data.set(w.out());
+    const nonceBitmap = new Uint8Array(256); if (used) nonceBitmap[0] = 128;
+    const data = encodePocketAccount({ appId: fieldToBytes32(23n), domainHash: fieldToBytes32(domainHash("https://bot.example.com")),
+      home: solver.publicKey, sessionKind: 0, sessionKey: Buffer.concat([currentSession.publicKey.toBuffer(), Buffer.alloc(1)]),
+      sessionExpirySlot: expiry, policy, nonceBitmap, maxSessionExpirySlot: maximumExpiry,
+      bump: PublicKey.findProgramAddressSync([Buffer.from("pocket"), Buffer.from(fieldToBytes32(23n))], POCKET)[1] });
     return { data, owner: POCKET, executable: false, lamports: 1 };
   };
   const chain = {

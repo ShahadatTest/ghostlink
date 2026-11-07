@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,7 +8,7 @@ import { Keypair, PublicKey, type Connection } from "@solana/web3.js";
 import { ed25519 } from "@noble/curves/ed25519";
 import bs58 from "bs58";
 import { POCKET_PROGRAM_ID, bytesToHex, conservativePolicy, domainHash, fieldToBytes32, intentHash, policyHash } from "@ghostlink/common";
-import { BorshWriter, POCKET, POCKET_ACCOUNT_SIZE, pocketPda, writePolicy } from "@ghostlink/service-kit";
+import { POCKET, encodePocketAccount, pocketPda } from "@ghostlink/service-kit";
 import { buildServer, MockPlanner } from "../src/server.js";
 import { SubmissionJournal } from "../src/journal.js";
 
@@ -20,13 +20,10 @@ it("charges a pocket's request quota only for intents its current session author
   const genesis = Keypair.generate().publicKey.toBase58(), solver = Keypair.generate(), session = Keypair.generate();
   const policy = conservativePolicy(), appId = fieldToBytes32(23n), pocket = pocketPda(appId);
   const account = () => {
-    const w = new BorshWriter().fixed(createHash("sha256").update("account:PocketV3").digest().subarray(0, 8))
-      .fixed(appId).fixed(fieldToBytes32(domainHash("https://bot.example.com"))).fixed(solver.publicKey.toBytes())
-      .u8(0).fixed(Buffer.concat([session.publicKey.toBuffer(), Buffer.alloc(1)])).u64(100_000n);
-    writePolicy(w, policy); w.u8(0).u64(0n).u64(0n);
-    w.fixed(new Uint8Array(256)).u8(PublicKey.findProgramAddressSync([Buffer.from("pocket"), Buffer.from(appId)], POCKET)[1])
-      .u64(100_000n).u64(0n).u64(0n);
-    const data = Buffer.alloc(POCKET_ACCOUNT_SIZE); data.set(w.out());
+    const data = encodePocketAccount({ appId, domainHash: fieldToBytes32(domainHash("https://bot.example.com")),
+      home: solver.publicKey, sessionKey: Buffer.concat([session.publicKey.toBuffer(), Buffer.alloc(1)]), sessionExpirySlot: 100_000n,
+      policy, bump: PublicKey.findProgramAddressSync([Buffer.from("pocket"), Buffer.from(appId)], POCKET)[1],
+      maxSessionExpirySlot: 100_000n });
     return { data, owner: POCKET, executable: false, lamports: 1 };
   };
   const connection = {

@@ -1,10 +1,10 @@
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Connection, Keypair, PublicKey, Transaction, type SignatureStatus } from "@solana/web3.js";
 import { conservativePolicy } from "@ghostlink/common";
-import { BorshWriter, POCKET, pocketPda, POCKET_ACCOUNT_SIZE, writePolicy, eventDisc, frameAsProgramLogs } from "@ghostlink/service-kit";
+import { POCKET, encodePocketAccount, pocketPda, eventDisc, frameAsProgramLogs } from "@ghostlink/service-kit";
 import { vi } from "vitest";
 import bs58 from "bs58";
 import { CrankJournal } from "../src/journal.js";
@@ -22,13 +22,9 @@ export function world(totalBudgetLamports = 20_000) {
   const states: WatcherState[] = [];
   const open = () => { const j = new CrankJournal(path, key, scope, { maximumFeeLamports: 10_000, totalBudgetLamports }); stores.push(j); return j; };
   const account = () => {
-    const w = new BorshWriter().fixed(createHash("sha256").update("account:PocketV3").digest().subarray(0, 8))
-      .fixed(appId).fixed(randomBytes(32)).fixed(home.toBytes()).u8(0).fixed(new Uint8Array(33)).u64(0n);
-    writePolicy(w, conservativePolicy());
-    w.u8(pending ? 1 : 0); if (pending) w.u8(0).fixed(newHome.toBytes()).u64(after);
-    w.u64(0n).u64(0n).fixed(new Uint8Array(256)).u8(PublicKey.findProgramAddressSync([Buffer.from("pocket"), appId], POCKET)[1])
-      .u64(0n).u64(0n).u64(0n);
-    const data = Buffer.alloc(POCKET_ACCOUNT_SIZE); data.set(w.out());
+    const data = encodePocketAccount({ appId, domainHash: randomBytes(32), home, policy: conservativePolicy(),
+      pending: pending ? { change: { home: newHome }, executableAfterSlot: after } : undefined,
+      bump: PublicKey.findProgramAddressSync([Buffer.from("pocket"), appId], POCKET)[1] });
     return { data, owner: POCKET, executable: false, lamports: 100_000_000 };
   };
   const afterBytes = Buffer.alloc(8); afterBytes.writeBigUInt64LE(after);

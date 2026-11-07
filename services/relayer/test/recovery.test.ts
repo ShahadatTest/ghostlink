@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { expect, it, vi } from "vitest";
 import {
   Connection,
@@ -10,15 +9,13 @@ import {
 } from "@solana/web3.js";
 import { conservativePolicy } from "@ghostlink/common";
 import {
-  BorshWriter,
   POCKET,
-  POCKET_ACCOUNT_SIZE,
   TOKEN,
   ataAddress,
   computeBudget,
+  encodePocketAccount,
   pocketPda,
   sweepHomeIx,
-  writePolicy,
 } from "@ghostlink/service-kit";
 import { prepareRecoverySweep } from "../src/recovery.js";
 
@@ -29,28 +26,12 @@ function world() {
     source = Keypair.generate().publicKey,
     id = new Uint8Array(32).fill(3),
     pocket = pocketPda(id);
-  const writer = new BorshWriter()
-    .fixed(
-      createHash("sha256").update("account:PocketV3").digest().subarray(0, 8),
-    )
-    .fixed(id)
-    .fixed(new Uint8Array(32))
-    .fixed(home.toBytes())
-    .u8(0)
-    .fixed(new Uint8Array(33))
-    .u64(0n);
-  writePolicy(writer, conservativePolicy());
-  writer
-    .u8(0)
-    .u64(0n)
-    .u64(0n)
-    .fixed(new Uint8Array(256))
-    .u8(255)
-    .u64(0n)
-    .u64(0n)
-    .u64(0n);
-  const data = Buffer.alloc(POCKET_ACCOUNT_SIZE);
-  data.set(writer.out());
+  const data = encodePocketAccount({
+    appId: id,
+    home,
+    policy: conservativePolicy(),
+    bump: 255,
+  });
   const info = (data: Buffer, owner = TOKEN): AccountInfo<Buffer> => ({
     data,
     owner,

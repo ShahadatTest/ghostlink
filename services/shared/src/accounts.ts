@@ -1,7 +1,8 @@
 import { sha256 } from "@noble/hashes/sha256";
 import { PublicKey, type AccountInfo } from "@solana/web3.js";
 import type { Policy } from "@ghostlink/common";
-import { CENSUS, POCKET } from "./instructions.js";
+import { BorshWriter } from "./borsh.js";
+import { CENSUS, POCKET, writePolicy } from "./instructions.js";
 
 const POCKET_DISC = sha256(new TextEncoder().encode("account:PocketV3")).subarray(0, 8);
 const CENSUS_CONFIG_DISC = sha256(new TextEncoder().encode("account:Config")).subarray(0, 8);
@@ -20,6 +21,38 @@ export function readCensusFee(info: AccountInfo<Uint8Array> | null, expectedProg
 }
 /** Discriminator plus current Pocket::INIT_SPACE, including the bounded speculative ledger. */
 export const POCKET_ACCOUNT_SIZE = 3293;
+/** Fixed entries in the speculative ledger (programs/pocket/src/speculative.rs MAX_POSITIONS). */
+const POCKET_POSITIONS = 8;
+
+export interface SpeculativePosition {
+  mint: PublicKey;
+  baseMint: PublicKey;
+  tokenAccount: PublicKey;
+  quantity: bigint;
+  costUsdE6: bigint;
+}
+
+/** Every PocketV3 field, as readPocketAccount returns it. */
+export interface PocketAccountState {
+  appId: Uint8Array;
+  domainHash: Uint8Array;
+  home: PublicKey;
+  sessionKind: number;
+  sessionKey: Uint8Array;
+  sessionExpirySlot: bigint;
+  policy: Policy;
+  pending?: { change: { home: PublicKey } | { policy: Policy }; executableAfterSlot: bigint };
+  dayStartSlot: bigint;
+  spentTodayUsdE6: bigint;
+  nonceBitmap: Uint8Array;
+  bump: number;
+  maxSessionExpirySlot: bigint;
+  nonceBase: bigint;
+  ownerActionNonce: bigint;
+  speculativeBoughtTodayUsdE6: bigint;
+  /** Open positions only; empty ledger entries are omitted. */
+  speculativePositions: SpeculativePosition[];
+}
 
 /** Same circular 2048-bit window as programs/pocket/src/state.rs. */
 export function isPocketNonceUsed(account: { nonceBase: bigint; nonceBitmap: Uint8Array }, nonce: bigint): boolean {
@@ -40,7 +73,7 @@ export function isPocketAccount(info: AccountInfo<Uint8Array> | null, appId: Uin
 }
 
 /** Decode the Borsh fields, whose offsets depend on policy and pending vectors. */
-export function readPocketAccount(info: AccountInfo<Uint8Array>, expectedProgram = POCKET) {
+export function readPocketAccount(info: AccountInfo<Uint8Array>, expectedProgram = POCKET): PocketAccountState {
   if (!isPocketAccount(info, info.data.subarray(8, 40), expectedProgram)) throw new Error("not a Pocket account");
   if (info.data.length !== POCKET_ACCOUNT_SIZE) {
     throw new Error(`unsupported Pocket account size: expected ${POCKET_ACCOUNT_SIZE}, got ${info.data.length}`);
@@ -102,8 +135,43 @@ export function readPocketAccount(info: AccountInfo<Uint8Array>, expectedProgram
   const nonceBase = u64();
   const ownerActionNonce = u64();
   const speculativeBoughtTodayUsdE6 = u64();
-  const speculativePositions = Array.from({ length: 8 }, () => ({ mint: key(), baseMint: key(),
+  const speculativePositions = Array.from({ length: POCKET_POSITIONS }, () => ({ mint: key(), baseMint: key(),
     tokenAccount: key(), quantity: u64(), costUsdE6: u64() })).filter(p => p.quantity > 0n);
   return { speculativeBoughtTodayUsdE6, speculativePositions, appId, domainHash, home, sessionKind, sessionKey, sessionExpirySlot, policy, pending,
     dayStartSlot, spentTodayUsdE6, nonceBitmap, bump, maxSessionExpirySlot, nonceBase, ownerActionNonce };
+}
+
+/**
+ * The inverse of readPocketAccount, for fixtures and simulations: the full
+ * PocketV3 allocation with every omitted field zero. It encodes; it never
+ * creates or authorizes an on-chain account.
+ */
+export function encodePocketAccount(
+  state: Pick<PocketAccountState, "appId" | "home" | "policy"> & Partial<PocketAccountState>,
+): Buffer {
+  const zero = (length: number) => new Uint8Array(length);
+  const positions = state.speculativePositions ?? [];
+  if (positions.length > POCKET_POSITIONS) throw new Error("too many speculative positions");
+  const w = new BorshWriter().fixed(POCKET_DISC, 8).fixed(state.appId, 32).fixed(state.domainHash ?? zero(32), 32)
+    .fixed(state.home.toBytes(), 32).u8(state.sessionKind ?? 0).fixed(state.sessionKey ?? zero(33), 33)
+    .u64(state.sessionExpirySlot ?? 0n);
+  writePolicy(w, state.policy);
+  w.option(state.pending, (writer, pending) => {
+    if ("home" in pending.change) writer.u8(0).fixed(pending.change.home.toBytes(), 32);
+    else { writer.u8(1); writePolicy(writer, pending.change.policy); }
+    writer.u64(pending.executableAfterSlot);
+  });
+  w.u64(state.dayStartSlot ?? 0n).u64(state.spentTodayUsdE6 ?? 0n).fixed(state.nonceBitmap ?? zero(256), 256)
+    .u8(state.bump ?? 0).u64(state.maxSessionExpirySlot ?? 0n).u64(state.nonceBase ?? 0n).u64(state.ownerActionNonce ?? 0n)
+    .u64(state.speculativeBoughtTodayUsdE6 ?? 0n);
+  for (let i = 0; i < POCKET_POSITIONS; i++) {
+    const p = positions[i];
+    if (p) w.fixed(p.mint.toBytes(), 32).fixed(p.baseMint.toBytes(), 32).fixed(p.tokenAccount.toBytes(), 32).u64(p.quantity).u64(p.costUsdE6);
+    else w.fixed(zero(112), 112);
+  }
+  const bytes = w.out();
+  if (bytes.length > POCKET_ACCOUNT_SIZE) throw new Error("Pocket fields exceed the account allocation");
+  const data = Buffer.alloc(POCKET_ACCOUNT_SIZE);
+  data.set(bytes);
+  return data;
 }

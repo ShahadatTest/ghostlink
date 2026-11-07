@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { sha256 } from "@noble/hashes/sha256";
 import { SystemProgram } from "@solana/web3.js";
-import { BorshWriter, POCKET, POCKET_ACCOUNT_SIZE, isPocketAccount, isPocketNonceUsed, readPocketAccount, writePolicy } from "../src/index.js";
+import { BorshWriter, POCKET, POCKET_ACCOUNT_SIZE, encodePocketAccount, isPocketAccount, isPocketNonceUsed, readPocketAccount, writePolicy } from "../src/index.js";
 import type { Policy } from "@ghostlink/common";
 
 const appId = new Uint8Array(32).fill(3);
@@ -48,6 +48,22 @@ describe("Pocket account decoding", () => {
       expect(isPocketAccount({ ...info, owner: SystemProgram.programId }, appId)).toBe(false);
       // Old allocations had padding that looks like a zero owner nonce.
       expect(() => readPocketAccount({ ...info, data: info.data.subarray(0, 2081) })).toThrow(/unsupported Pocket account size/);
+      // The fixture encoder agrees with this independent byte layout.
+      const decoded = readPocketAccount(info);
+      expect(Buffer.from(encodePocketAccount(decoded)).equals(Buffer.from(data))).toBe(true);
     }
+  });
+  it("encodes fixture accounts that decode to the same state", () => {
+    const home = SystemProgram.programId, position = { mint: home, baseMint: POCKET, tokenAccount: POCKET, quantity: 4n, costUsdE6: 5n };
+    const state = { appId, home, policy, bump: 7, sessionExpirySlot: 9n, nonceBase: 10n, ownerActionNonce: 11n,
+      pending: { change: { policy }, executableAfterSlot: 12n }, speculativePositions: [position] };
+    const data = encodePocketAccount(state);
+    const decoded = readPocketAccount({ owner: POCKET, data, executable: false, lamports: 1, rentEpoch: 0 });
+    expect([decoded.bump, decoded.sessionExpirySlot, decoded.nonceBase, decoded.ownerActionNonce]).toEqual([7, 9n, 10n, 11n]);
+    expect(Buffer.from(decoded.appId).equals(Buffer.from(appId)) && decoded.home.equals(home)).toBe(true);
+    expect(decoded.pending?.executableAfterSlot).toBe(12n);
+    expect(decoded.speculativePositions).toEqual([position]);
+    expect(encodePocketAccount(decoded).equals(data)).toBe(true);
+    expect(() => encodePocketAccount({ ...state, speculativePositions: Array(9).fill(position) })).toThrow(/too many/);
   });
 });
