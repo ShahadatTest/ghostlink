@@ -33,91 +33,100 @@ import { DEFAULT_TRANSACTION_LIMITS } from "./transactions.js";
 import { JupiterPlanner } from "./jupiter.js";
 import { operatorServer } from "./operations.js";
 
-const keypairPath = process.env.GHOSTLINK_SOLVER_KEYPAIR;
-if (!keypairPath) {
-  console.error("GHOSTLINK_SOLVER_KEYPAIR is required (path to a keypair JSON outside the repo)");
-  process.exit(1);
-}
-const journalPath = process.env.SOLVER_JOURNAL_PATH;
-const journalKeyPath = process.env.SOLVER_JOURNAL_KEY_PATH;
-const genesisHash = process.env.SOLVER_GENESIS_HASH;
-const journalId = process.env.SOLVER_JOURNAL_ID;
-if (!journalPath || !journalKeyPath || !genesisHash || !journalId || !/^[0-9a-f]{64}$/.test(journalId)) {
-  throw new Error("solver journal path, key, pinned identity and approved genesis are required");
-}
-const keypair = Keypair.fromSecretKey(
-  Uint8Array.from(JSON.parse(readFileSync(keypairPath, "utf8"))),
-);
-const rpc = createRpcPool({ genesisHash, endpoints: loadRpcEndpoints(process.env.RPC_ENDPOINTS_PATH, process.env.RPC_URL) });
-const connection = rpc.connection;
-if (await connection.getGenesisHash() !== genesisHash) throw new Error("RPC genesis differs from approved solver configuration");
-const router = process.env.SOLVER_ROUTER ?? "inventory";
-if (router !== "inventory" && router !== "jupiter-raydium-cp") throw new Error("unsupported SOLVER_ROUTER");
-function privateText(name: string, maximum: number): string {
-  const path = process.env[name];
-  if (!path || !statSync(path).isFile() || statSync(path).size > maximum) throw new Error(`${name} must name a bounded configuration file`);
-  return readFileSync(path, "utf8").trim();
-}
-const planner = router === "inventory" ? new MockPlanner() : new JupiterPlanner(connection, {
-  apiKey: privateText("JUPITER_API_KEY_PATH", 512),
-  pools: JSON.parse(privateText("JUPITER_POOLS_PATH", 32_768)),
-  slippageBps: Number(process.env.JUPITER_SLIPPAGE_BPS ?? 50),
-});
-const journalKey = readFileSync(journalKeyPath);
-let journal: SubmissionJournal;
-try { journal = SubmissionJournal.openExisting(journalPath, journalKey,
-  { genesisHash, pocketProgram: POCKET_PROGRAM_ID, solver: keypair.publicKey.toBase58() }, journalId); }
-finally { journalKey.fill(0); }
-const priceAccounts = process.env.PRICE_ACCOUNTS
-  ? (JSON.parse(process.env.PRICE_ACCOUNTS) as Record<string, string>)
-  : {};
-const port = Number(process.env.PORT ?? 8789);
-const operationsPort = Number(process.env.OPERATIONS_PORT ?? 18789);
-for (const n of [port, operationsPort]) if (!Number.isInteger(n) || n < 1 || n > 65535) throw new Error("invalid solver HTTP port");
-if (port === operationsPort) throw new Error("solver and operations ports must differ");
+async function main(): Promise<void> {
+  const keypairPath = process.env.GHOSTLINK_SOLVER_KEYPAIR;
+  if (!keypairPath) {
+    console.error("GHOSTLINK_SOLVER_KEYPAIR is required (path to a keypair JSON outside the repo)");
+    process.exit(1);
+  }
+  const journalPath = process.env.SOLVER_JOURNAL_PATH;
+  const journalKeyPath = process.env.SOLVER_JOURNAL_KEY_PATH;
+  const genesisHash = process.env.SOLVER_GENESIS_HASH;
+  const journalId = process.env.SOLVER_JOURNAL_ID;
+  if (!journalPath || !journalKeyPath || !genesisHash || !journalId || !/^[0-9a-f]{64}$/.test(journalId)) {
+    throw new Error("solver journal path, key, pinned identity and approved genesis are required");
+  }
+  const keypair = Keypair.fromSecretKey(
+    Uint8Array.from(JSON.parse(readFileSync(keypairPath, "utf8"))),
+  );
+  const rpc = createRpcPool({ genesisHash, endpoints: loadRpcEndpoints(process.env.RPC_ENDPOINTS_PATH, process.env.RPC_URL) });
+  const connection = rpc.connection;
+  if (await connection.getGenesisHash() !== genesisHash) throw new Error("RPC genesis differs from approved solver configuration");
+  const router = process.env.SOLVER_ROUTER ?? "inventory";
+  if (router !== "inventory" && router !== "jupiter-raydium-cp") throw new Error("unsupported SOLVER_ROUTER");
+  function privateText(name: string, maximum: number): string {
+    const path = process.env[name];
+    if (!path || !statSync(path).isFile() || statSync(path).size > maximum) throw new Error(`${name} must name a bounded configuration file`);
+    return readFileSync(path, "utf8").trim();
+  }
+  const planner = router === "inventory" ? new MockPlanner() : new JupiterPlanner(connection, {
+    apiKey: privateText("JUPITER_API_KEY_PATH", 512),
+    pools: JSON.parse(privateText("JUPITER_POOLS_PATH", 32_768)),
+    slippageBps: Number(process.env.JUPITER_SLIPPAGE_BPS ?? 50),
+  });
+  const journalKey = readFileSync(journalKeyPath);
+  let journal: SubmissionJournal;
+  try { journal = SubmissionJournal.openExisting(journalPath, journalKey,
+    { genesisHash, pocketProgram: POCKET_PROGRAM_ID, solver: keypair.publicKey.toBase58() }, journalId); }
+  finally { journalKey.fill(0); }
+  const priceAccounts = process.env.PRICE_ACCOUNTS
+    ? (JSON.parse(process.env.PRICE_ACCOUNTS) as Record<string, string>)
+    : {};
+  const port = Number(process.env.PORT ?? 8789);
+  const operationsPort = Number(process.env.OPERATIONS_PORT ?? 18789);
+  for (const n of [port, operationsPort]) if (!Number.isInteger(n) || n < 1 || n > 65535) throw new Error("invalid solver HTTP port");
+  if (port === operationsPort) throw new Error("solver and operations ports must differ");
 
-const server = buildServer({
-  connection,
-  keypair,
-  planner,
-  journal,
-  transactionLimits: {
-    maxComputeUnits: Number(process.env.SOLVER_MAX_COMPUTE_UNITS ?? DEFAULT_TRANSACTION_LIMITS.maxComputeUnits),
-    priorityMicroLamports: BigInt(process.env.SOLVER_PRIORITY_MICRO_LAMPORTS ?? DEFAULT_TRANSACTION_LIMITS.priorityMicroLamports),
-    maxNetworkFeeLamports: BigInt(process.env.SOLVER_MAX_NETWORK_FEE_LAMPORTS ?? DEFAULT_TRANSACTION_LIMITS.maxNetworkFeeLamports),
-  },
-  priceAccounts,
-  maxQuoteSpreadBps: process.env.SOLVER_MAX_SPREAD_BPS ? Number(process.env.SOLVER_MAX_SPREAD_BPS) : undefined,
-  allowUnpriced: process.env.SOLVER_ALLOW_UNPRICED === "1",
-  createPocketAta: process.env.SOLVER_CREATE_POCKET_ATA === "1",
-  trustProxy: process.env.TRUST_PROXY === "1",
-  minimumBalanceLamports: Number(process.env.SOLVER_MIN_BALANCE_LAMPORTS ?? 5_000_000),
-});
-const operator = operatorServer(server.operations, rpc.status);
-let stopping = false;
-function shutdown() {
-  if (stopping) return;
-  stopping = true; server.operations.drain();
-  // A forced stop leaves exact packets in the journal for reconciliation.
-  const deadline = setTimeout(() => {
-    clearInterval(drainCheck);
-    server.closeAllConnections(); operator.closeAllConnections(); rpc.close(); journal.close(); process.exit(1);
-  }, 30_000);
-  deadline.unref();
-  let httpClosed = false;
-  server.close(() => { httpClosed = true; });
-  // Disconnected clients can leave preparation/submission work running after
-  // Node's server-close callback. Keep its journal open until that work settles.
-  const drainCheck = setInterval(() => {
-    if (!httpClosed || server.operations.snapshot().active !== 0) return;
-    clearInterval(drainCheck); clearTimeout(deadline);
-    server.operations.stop(); rpc.close(); journal.close(); operator.close();
-  }, 50);
-  drainCheck.unref();
+  const server = buildServer({
+    connection,
+    keypair,
+    planner,
+    journal,
+    transactionLimits: {
+      maxComputeUnits: Number(process.env.SOLVER_MAX_COMPUTE_UNITS ?? DEFAULT_TRANSACTION_LIMITS.maxComputeUnits),
+      priorityMicroLamports: BigInt(process.env.SOLVER_PRIORITY_MICRO_LAMPORTS ?? DEFAULT_TRANSACTION_LIMITS.priorityMicroLamports),
+      maxNetworkFeeLamports: BigInt(process.env.SOLVER_MAX_NETWORK_FEE_LAMPORTS ?? DEFAULT_TRANSACTION_LIMITS.maxNetworkFeeLamports),
+    },
+    priceAccounts,
+    maxQuoteSpreadBps: process.env.SOLVER_MAX_SPREAD_BPS ? Number(process.env.SOLVER_MAX_SPREAD_BPS) : undefined,
+    allowUnpriced: process.env.SOLVER_ALLOW_UNPRICED === "1",
+    createPocketAta: process.env.SOLVER_CREATE_POCKET_ATA === "1",
+    trustProxy: process.env.TRUST_PROXY === "1",
+    minimumBalanceLamports: Number(process.env.SOLVER_MIN_BALANCE_LAMPORTS ?? 5_000_000),
+  });
+  const operator = operatorServer(server.operations, rpc.status);
+  let stopping = false;
+  function shutdown() {
+    if (stopping) return;
+    stopping = true; server.operations.drain();
+    // A forced stop leaves exact packets in the journal for reconciliation.
+    const deadline = setTimeout(() => {
+      clearInterval(drainCheck);
+      server.closeAllConnections(); operator.closeAllConnections(); rpc.close(); journal.close(); process.exit(1);
+    }, 30_000);
+    deadline.unref();
+    let httpClosed = false;
+    server.close(() => { httpClosed = true; });
+    // Disconnected clients can leave preparation/submission work running after
+    // Node's server-close callback. Keep its journal open until that work settles.
+    const drainCheck = setInterval(() => {
+      if (!httpClosed || server.operations.snapshot().active !== 0) return;
+      clearInterval(drainCheck); clearTimeout(deadline);
+      server.operations.stop(); rpc.close(); journal.close(); operator.close();
+    }, 50);
+    drainCheck.unref();
+  }
+  process.once("SIGTERM", shutdown);
+  process.once("SIGINT", shutdown);
+  operator.listen(operationsPort, "127.0.0.1");
+  server.listen(port, () => {
+    console.log(`ghostlink solver on :${port}, identity ${keypair.publicKey.toBase58()}`);
+  });
 }
-process.once("SIGTERM", shutdown);
-process.once("SIGINT", shutdown);
-operator.listen(operationsPort, "127.0.0.1");
-server.listen(port, () => {
-  console.log(`ghostlink solver on :${port}, identity ${keypair.publicKey.toBase58()}`);
+
+// Report startup failures generically: a raw parse error of a damaged keypair file can quote
+// secret-key bytes. Exit at once, as an uncaught startup error would, so no handle keeps it alive.
+void main().catch(() => {
+  console.error("solver startup failed; check approved configuration, keys, journal and dependencies");
+  process.exit(1);
 });
