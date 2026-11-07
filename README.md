@@ -185,11 +185,13 @@ pnpm pack:sdk && pnpm test:package   # writes artifacts/sdk/*.tgz and SHA256SUMS
 - [x] Policy-bound V2 authorization: each proof commits to the exact policy, session kind and deployment
 - [x] Bot backend with Telegram authentication, encrypted keys and crash-safe order recovery
 - [x] Experimental single-hop Jupiter/Raydium route, tested on a local fork
-- [ ] npm releases with provenance
-- [ ] Public phase-2 [trusted-setup ceremony](docs/CEREMONY.md) to replace the development keys
+- [x] Spam-resistant root history and snapshot fees ([ADR 0005](docs/adr/0005-census-spam-resistance.md)); pinned oracle prices, rolling daily caps, revoke epochs and frozen-token recovery ([ADR 0006](docs/adr/0006-pocket-hardening.md))
+- [x] Trusted-setup [ceremony tooling](docs/CEREMONY.md), rehearsed end to end
+- [ ] npm releases with provenance ([release process](RELEASING.md))
+- [ ] Public phase-2 trusted-setup ceremony to replace the development keys
 - [ ] External security audit of the circuits, programs and SDK
 - [ ] Token-2022 support, more routes, copy-trading and DCA triggers
-- [ ] Python, Rust and Go clients
+- [ ] Python, Rust and Go clients ([help wanted](https://github.com/Ghostlink-Labs/ghostlink/labels/help%20wanted))
 - [ ] Capped mainnet pilot
 
 The full checklist, with the evidence each gate needs, is in [mainnet readiness](docs/MAINNET-READINESS.md).
