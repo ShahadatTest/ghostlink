@@ -21,6 +21,8 @@ export interface SweepPair {
   mint?: PublicKey;
 }
 type Info = AccountInfo<Buffer> | null;
+const INITIALIZED = 1,
+  FROZEN = 2;
 function token(
   info: Info,
   owner: PublicKey,
@@ -32,7 +34,9 @@ function token(
     info.executable ||
     !info.owner.equals(TOKEN) ||
     info.data.length !== 165 ||
-    info.data[108] !== 1 ||
+    // A frozen source is passed through for the program to skip; a
+    // destination must be able to receive the transfer.
+    !(info.data[108] === INITIALIZED || (!destination && info.data[108] === FROZEN)) ||
     !info.data.subarray(0, 32).equals(mint.toBuffer()) ||
     !info.data.subarray(32, 64).equals(owner.toBuffer())
   )
@@ -89,6 +93,7 @@ export async function prepareRecoverySweep(
     source: PublicKey;
     destination: PublicKey;
     mint: PublicKey;
+    frozen?: true;
   }[] = [];
   let rent = 0n;
   if (!pairs.length) return { instructions, signers, rent, pairs: resolved };
@@ -134,6 +139,17 @@ export async function prepareRecoverySweep(
       mint = mints[i]!,
       info = accounts.value[i]!,
       canonical = ataAddress(home, mint);
+    if (sources.value[i]!.data[108] === FROZEN) {
+      // Nothing can leave a frozen account: the program skips this pair and
+      // never reads its destination, so nothing is created or paid for.
+      resolved.push({
+        source: pair.source,
+        destination: destinations[i]!,
+        mint,
+        frozen: true,
+      });
+      continue;
+    }
     let destination = destinations[i]!;
     if (!pair.destination && automatic.has(mint.toBase58()))
       destination = automatic.get(mint.toBase58())!;

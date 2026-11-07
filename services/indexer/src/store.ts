@@ -272,6 +272,15 @@ export class IndexerStore {
         this.note(event.pocket, event.kind, {});
         break;
       }
+      case "PositionWrittenOff": {
+        this.note(event.pocket, "PositionWrittenOff", {
+          tokenAccount: event.tokenAccount,
+          mint: event.mint,
+          quantity: event.quantity.toString(),
+          costUsdE6: event.costUsdE6.toString(),
+        });
+        break;
+      }
       default:
         return false;
     }

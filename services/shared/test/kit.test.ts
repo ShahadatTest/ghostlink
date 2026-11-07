@@ -13,6 +13,7 @@ import {
   disc,
   ed25519Ix,
   eventDisc,
+  fillBeginIx,
   fillStatePda,
   frameAsProgramLogs,
   pocketPda,
@@ -34,7 +35,27 @@ it("decodes the complete PocketV3 Filled layout and rejects truncated or unsuppo
   encoded[encoded.length - 9] = 3; expect(decodeEventData(encoded)).toBeNull();
 });
 
+it("decodes a frozen-position write-off and rejects a truncated one", () => {
+  // programs/pocket/src/state.rs PositionWrittenOff: pocket, token account, mint, quantity, cost.
+  const encoded = Buffer.concat([eventDisc("PositionWrittenOff"), Buffer.alloc(32, 1), Buffer.alloc(32, 2), Buffer.alloc(32, 3),
+    new BorshWriter().u64(100n).u64(10_000_000n).out()]);
+  expect(decodeEventData(encoded)).toMatchObject({ kind: "PositionWrittenOff", tokenAccount: new PublicKey(Buffer.alloc(32, 2)).toBase58(),
+    mint: new PublicKey(Buffer.alloc(32, 3)).toBase58(), quantity: 100n, costUsdE6: 10_000_000n });
+  expect(decodeEventData(encoded.subarray(0, encoded.length - 1))).toBeNull();
+  const logs = frameAsProgramLogs(POCKET_PROGRAM_ID, [`Program data: ${encoded.toString("base64")}`]);
+  expect(decodeLogs(logs)).toHaveLength(1);
+  expect(decodeLogs(frameAsProgramLogs(REGISTRY_PROGRAM_ID, [`Program data: ${encoded.toString("base64")}`]))).toHaveLength(0);
+});
+
 describe("instruction encoding", () => {
+  it("passes the intent's output mint last to fill_begin", () => {
+    const pocket = new PublicKey(vectors.pdas.pocket.address), outMint = new PublicKey(Buffer.alloc(32, 9));
+    const ix = fillBeginIx({ solver: pocket, pocket, pocketIn: pocket, solverIn: pocket, pocketOut: pocket, inPrice: pocket,
+      intent: { nonce: 7n, inMint: pocket, inMax: 1n, outMint, outMin: 1n, deadlineSlot: 9n, policyHash: new Uint8Array(32) } });
+    expect(ix.keys).toHaveLength(11);
+    expect(ix.keys[10]).toEqual({ pubkey: outMint, isSigner: false, isWritable: false });
+  });
+
   it("derives the fixture pocket PDA", () => {
     const appId = hexToBytes(
       BigInt(vectors.pdas.pocket.appId).toString(16).padStart(64, "0"),

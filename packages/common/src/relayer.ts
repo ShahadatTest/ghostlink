@@ -11,7 +11,8 @@ export interface RelayerReceipt {
   state: "preparing" | "pending" | "confirmed" | "finalized" | "failed" | "unknown";
   signature?: string; slot?: number; confirmationStatus?: "confirmed" | "finalized";
   reason?: string;
-  tokenPairs?: { source: string; destination: string; mint: string }[];
+  /** `frozen`: the source is frozen; the sweep skips it and only writes off a position held there. */
+  tokenPairs?: { source: string; destination: string; mint: string; frozen?: true }[];
 }
 /** Exact JSON identity, including proof bytes. Re-proving or editing a body is a different operation. */
 export function relayerRequestDigest(route: RelayerRoute, request: object): string {

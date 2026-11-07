@@ -78,6 +78,32 @@ function world() {
     );
   return { payer, home, mint, source, pocket, accounts, rpc, token, prepare };
 }
+it("passes a frozen source through without creating or paying for a destination", async () => {
+  const w = world(),
+    frozen = w.token(w.pocket),
+    other = Keypair.generate().publicKey;
+  frozen.data[108] = 2;
+  w.accounts.set(w.source.toBase58(), frozen);
+  w.accounts.set(other.toBase58(), w.token(w.pocket));
+  w.accounts.set(ataAddress(w.home, w.mint).toBase58(), w.token(w.home));
+  const plan = await w.prepare([{ source: w.source }, { source: other }]);
+  expect(plan.instructions).toHaveLength(0);
+  expect(plan.rent).toBe(0n);
+  expect(plan.pairs[0]).toEqual({ source: w.source, destination: ataAddress(w.home, w.mint), mint: w.mint, frozen: true });
+  expect(plan.pairs[1]!.frozen).toBeUndefined();
+  // A missing destination for a frozen source is neither created nor charged.
+  w.accounts.delete(ataAddress(w.home, w.mint).toBase58());
+  const alone = await w.prepare([{ source: w.source }]);
+  expect([alone.instructions.length, alone.rent, alone.pairs[0]!.frozen]).toEqual([0, 0n, true]);
+  expect(w.rpc.getMinimumBalanceForRentExemption).not.toHaveBeenCalled();
+  // A frozen destination is still never used for a transfer.
+  const frozenHome = w.token(w.home);
+  frozenHome.data[108] = 2;
+  w.accounts.set(w.source.toBase58(), w.token(w.pocket));
+  w.accounts.set(ataAddress(w.home, w.mint).toBase58(), frozenHome);
+  const avoided = await w.prepare([{ source: w.source }]);
+  expect(avoided.pairs[0]!.destination.equals(ataAddress(w.home, w.mint))).toBe(false);
+});
 it("reuses a clean home account, creates a missing ATA once and does not substitute an explicit destination", async () => {
   const w = world(),
     destination = ataAddress(w.home, w.mint),

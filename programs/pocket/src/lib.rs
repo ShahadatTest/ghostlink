@@ -46,7 +46,9 @@ pub mod token;
 use oracle::{read_price, usd_e6};
 use precompile::{check_session_signature, WebauthnData};
 use state::*;
-use token::{close_pocket_account, parse_token_account, transfer_from_pocket};
+use token::{
+    close_pocket_account, parse_mint, parse_token_account, parse_token_account_any_state, transfer_from_pocket,
+};
 
 declare_id!("HbSux9YnTupzNiRUwdR2mjTpJJryx25RV42wry4kCwiH");
 
@@ -368,6 +370,12 @@ pub mod ghostlink_pocket {
                 // owner recovery remain available during the timelock.
                 require!(!matches!(&pocket.pending, Some(PendingChange { change: Change::Policy(_), .. })),
                     PocketError::ChangePending);
+                // A freeze authority could lock the position's account, and
+                // with it every exit and sweep. Classic SPL Token never
+                // re-enables a removed freeze authority, so a position bought
+                // without one can always leave the pocket.
+                require!(parse_mint(&ctx.accounts.out_mint)?.freeze_authority.is_none(),
+                    PocketError::FreezableMint);
                 pocket.speculative_ledger.check_buy(spec, args.out_mint, args.in_mint,
                     ctx.accounts.pocket_out_account.key(), in_value_usd_e6)?;
             } else {
@@ -489,6 +497,11 @@ pub mod ghostlink_pocket {
     /// an owner proof, so it still works after a session is lost or
     /// revoked. Token accounts come as (pocket_ata, home_ata) pairs in
     /// remaining_accounts; surplus lamports on the pocket follow.
+    ///
+    /// A frozen source is skipped: no transfer or close can succeed, and it
+    /// must never make the rest of the recovery fail. With an owner proof
+    /// a speculative position held in it is written off (cleared), so it
+    /// can never block a policy change either.
     pub fn sweep_home<'info>(
         ctx: Context<'_, '_, 'info, 'info, SweepHome<'info>>,
         auth: SessionOrOwner,
@@ -506,6 +519,7 @@ pub mod ghostlink_pocket {
         let digest = hashv(&[&digest_input]).to_bytes();
         authorize(&ctx.accounts.pocket, &ctx.accounts.instructions, &ctx.accounts.registry_tree, &auth, &digest)?;
         ctx.accounts.pocket.consume_owner_action()?;
+        let owner_authorized = matches!(auth, SessionOrOwner::Owner(_));
 
         let pocket = &mut ctx.accounts.pocket;
         let app_id = pocket.app_id;
@@ -517,8 +531,26 @@ pub mod ghostlink_pocket {
         for pair in rest.chunks(2) {
             let src_info = &pair[0];
             let dst_info = &pair[1];
-            let src = parse_token_account(src_info)?;
+            let src = parse_token_account_any_state(src_info)?;
             require!(src.owner == pocket_key, PocketError::BadTokenAccount);
+            if src.frozen {
+                // Its tokens stay in this pocket-owned account; a later sweep
+                // returns them if the issuer thaws it. Writing off the
+                // position is the owner's decision, like a total-loss exit:
+                // a session sweep leaves the ledger untouched.
+                if owner_authorized {
+                    if let Some(p) = pocket.speculative_ledger.take(src_info.key()) {
+                        emit!(PositionWrittenOff {
+                            pocket: pocket_key,
+                            token_account: src_info.key(),
+                            mint: p.mint,
+                            quantity: p.quantity,
+                            cost_usd_e6: p.cost_usd_e6,
+                        });
+                    }
+                }
+                continue;
+            }
             let dst = parse_token_account(dst_info)?;
             // A relayer may select any home-owned account. It must not redirect
             // the withdrawn balance into a pre-existing third-party authority.
@@ -812,6 +844,10 @@ pub struct FillBegin<'info> {
     #[account(address = anchor_lang::solana_program::sysvar::instructions::ID)]
     pub instructions: UncheckedAccount<'info>,
     pub system_program: Program<'info, System>,
+    /// CHECK: the intent's output mint (address-constrained); parsed for
+    /// speculative buys, which refuse a mint with a freeze authority.
+    #[account(address = args.out_mint @ PocketError::BadTokenAccount)]
+    pub out_mint: UncheckedAccount<'info>,
 }
 
 #[derive(Accounts)]

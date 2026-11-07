@@ -5,6 +5,8 @@ fn world() -> FillWorld {
     let mut w = fill_world_with_policy(true);
     let mint = label("unpriced token");
     let sp = w.solver.pubkey();
+    // Speculative buys refuse mints that can freeze the position's account.
+    w.ctx.h.svm.set_account(Pubkey::new_from_array(mint), mint_account(6, None)).unwrap();
     w.ctx.h.svm.set_account(w.pocket_in, token_account(&w.ctx.usdc, &w.ctx.pocket, 100_000_000)).unwrap();
     // A donation predates the trade; only measured acquired units count.
     w.ctx.h.svm.set_account(w.pocket_out, token_account(&mint, &w.ctx.pocket, 1_000)).unwrap();

@@ -391,6 +391,24 @@ pub fn token_account(mint: &[u8; 32], owner: &Pubkey, amount: u64) -> Account {
     }
 }
 
+/// An initialized classic SPL mint (82 bytes), optionally with a freeze authority.
+pub fn mint_account(decimals: u8, freeze_authority: Option<&Pubkey>) -> Account {
+    let mut data = vec![0u8; 82];
+    data[44] = decimals;
+    data[45] = 1; // initialized
+    if let Some(authority) = freeze_authority {
+        data[46..50].copy_from_slice(&1u32.to_le_bytes());
+        data[50..82].copy_from_slice(authority.as_ref());
+    }
+    Account {
+        lamports: 1_461_600,
+        data,
+        owner: pk(TOKEN_ID),
+        executable: false,
+        rent_epoch: 0,
+    }
+}
+
 /// A Pyth PriceUpdateV2 account with a fully-verified price.
 pub fn pyth_account(feed_id: &[u8; 32], price: i64, exponent: i32, publish_time: i64) -> Account {
     let mut data = Vec::with_capacity(134);

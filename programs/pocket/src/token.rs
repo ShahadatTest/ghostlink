@@ -1,7 +1,7 @@
-//! Raw SPL token account parsing and the only two CPIs this program ever
-//! makes: Transfer and CloseAccount on the pocket's own token accounts,
-//! both signed with the pocket PDA. There is no other `invoke_signed`
-//! anywhere in this program (audited invariant).
+//! Raw SPL token account and mint parsing, and the only two CPIs this
+//! program ever makes: Transfer and CloseAccount on the pocket's own token
+//! accounts, both signed with the pocket PDA. There is no other
+//! `invoke_signed` anywhere in this program (audited invariant).
 
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::instruction::{AccountMeta, Instruction};
@@ -17,6 +17,8 @@ pub struct ParsedTokenAccount {
     pub amount: u64,
     pub delegate: Option<Pubkey>,
     pub close_authority: Option<Pubkey>,
+    /// Frozen by its mint's freeze authority: no transfer or close succeeds.
+    pub frozen: bool,
 }
 
 impl ParsedTokenAccount {
@@ -25,14 +27,26 @@ impl ParsedTokenAccount {
     }
 }
 
-/// Parses an SPL token account, verifying it is owned by the SPL Token
-/// program and initialized. (Fills are SPL-Token-only in v1; the census
-/// additionally reads Token-2022, see docs/adr/0001.)
+/// Parses an SPL token account a fill can use: owned by the SPL Token
+/// program, initialized and not frozen. (Fills are SPL-Token-only in v1;
+/// the census additionally reads Token-2022, see docs/adr/0001.)
 pub fn parse_token_account(info: &AccountInfo) -> Result<ParsedTokenAccount> {
+    let account = parse_token_account_any_state(info)?;
+    require!(!account.frozen, PocketError::BadTokenAccount);
+    Ok(account)
+}
+
+/// Parses an initialized SPL token account whether or not it is frozen.
+/// Only recovery accepts a frozen account, and only to skip it.
+pub fn parse_token_account_any_state(info: &AccountInfo) -> Result<ParsedTokenAccount> {
     require!(info.owner == &TOKEN_PROGRAM_ID, PocketError::BadTokenAccount);
     let data = info.try_borrow_data()?;
     require!(data.len() == 165, PocketError::BadTokenAccount);
-    require!(data[108] == 1, PocketError::BadTokenAccount); // initialized, not frozen
+    let frozen = match data[108] {
+        1 => false, // initialized
+        2 => true,  // frozen
+        _ => return err!(PocketError::BadTokenAccount),
+    };
     let close_authority = match &data[129..133] {
         [0, 0, 0, 0] => None,
         [1, 0, 0, 0] => Some(Pubkey::try_from(&data[133..165]).unwrap()),
@@ -49,7 +63,26 @@ pub fn parse_token_account(info: &AccountInfo) -> Result<ParsedTokenAccount> {
         amount: u64::from_le_bytes(data[64..72].try_into().unwrap()),
         delegate,
         close_authority,
+        frozen,
     })
+}
+
+pub struct ParsedMint {
+    pub freeze_authority: Option<Pubkey>,
+}
+
+/// Parses an initialized classic SPL mint (82 bytes: mint authority,
+/// supply, decimals, initialized flag, then the freeze authority option).
+pub fn parse_mint(info: &AccountInfo) -> Result<ParsedMint> {
+    require!(info.owner == &TOKEN_PROGRAM_ID, PocketError::BadTokenAccount);
+    let data = info.try_borrow_data()?;
+    require!(data.len() == 82 && data[45] == 1, PocketError::BadTokenAccount);
+    let freeze_authority = match &data[46..50] {
+        [0, 0, 0, 0] => None,
+        [1, 0, 0, 0] => Some(Pubkey::try_from(&data[50..82]).unwrap()),
+        _ => return err!(PocketError::BadTokenAccount),
+    };
+    Ok(ParsedMint { freeze_authority })
 }
 
 /// SPL Token Transfer (instruction 3) from a pocket-owned account, signed

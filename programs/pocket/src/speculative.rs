@@ -96,9 +96,20 @@ impl SpeculativeLedger {
     /// Sweeping an unrelated token account must not erase another account's
     /// exposure. A complete sweep of the tracked account retires permission.
     pub fn swept(&mut self, token_account: Pubkey) {
+        self.take(token_account);
+    }
+
+    /// Clears and returns the open position held in `token_account`. Buys
+    /// bind one account per asset, so at most one position matches.
+    pub fn take(&mut self, token_account: Pubkey) -> Option<Position> {
+        let mut taken = None;
         for p in &mut self.positions {
-            if p.token_account == token_account { *p = Position::default(); }
+            if p.token_account == token_account {
+                if p.quantity != 0 { taken = Some(*p); }
+                *p = Position::default();
+            }
         }
+        taken
     }
 }
 
@@ -135,6 +146,20 @@ mod tests {
         assert!(!l.has_positions());
         assert!(l.check_exit(mint, base, account, 1).is_err()); // redeposit cannot resurrect permission
         assert_eq!(l.bought_today_usd_e6, 1);
+    }
+
+    #[test]
+    fn take_clears_only_the_open_position_held_in_that_account() {
+        let (mint, base, account) = (Pubkey::new_unique(), Pubkey::new_unique(), Pubkey::new_unique());
+        let p = policy(base);
+        let mut l = SpeculativeLedger::default();
+        l.acquire(&p, mint, base, account, 5, 3).unwrap();
+        assert_eq!(l.take(Pubkey::new_unique()), None);
+        assert_eq!(l.cost_exposure().unwrap(), 3);
+        assert_eq!(l.take(account), Some(Position { mint, base_mint: base, token_account: account,
+            quantity: 5, cost_usd_e6: 3 }));
+        assert!(!l.has_positions());
+        assert_eq!(l.take(account), None);
     }
 
     #[test]

@@ -359,6 +359,8 @@ export function fillBeginIx(params: {
       { pubkey: TOKEN, isSigner: false, isWritable: false },
       { pubkey: SYSVAR_INSTRUCTIONS_PUBKEY, isSigner: false, isWritable: false },
       { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+      // The output mint: a speculative buy refuses one with a freeze authority.
+      { pubkey: params.intent.outMint, isSigner: false, isWritable: false },
     ],
     data: data("fill_begin", w.out()),
   });

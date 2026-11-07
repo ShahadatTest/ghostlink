@@ -357,6 +357,18 @@ pub struct SessionRevoked {
     pub pocket: Pubkey,
 }
 
+/// An owner-proof sweep cleared a speculative position whose token account
+/// is frozen. Its tokens stay in that pocket-owned account; a later sweep
+/// returns them home if the account is ever thawed.
+#[event]
+pub struct PositionWrittenOff {
+    pub pocket: Pubkey,
+    pub token_account: Pubkey,
+    pub mint: Pubkey,
+    pub quantity: u64,
+    pub cost_usd_e6: u64,
+}
+
 #[error_code]
 pub enum PocketError {
     #[msg("must be a top-level instruction")]
@@ -453,4 +465,6 @@ pub enum PocketError {
     SpeculativePositionLimit,
     #[msg("close or sweep speculative positions before executing a policy change")]
     PositionsOpen,
+    #[msg("speculative buys refuse mints that have a freeze authority")]
+    FreezableMint,
 }

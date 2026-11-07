@@ -421,6 +421,7 @@ fn fill_begin_ix(w: &FillWorld, args: &IntentArgs, in_price: &Pubkey, webauthn: 
             meta_r(pk(TOKEN_ID)),
             meta_r(pk(SYSVAR_IX_ID)),
             meta_r(pk(SYSTEM_ID)),
+            meta_r(Pubkey::new_from_array(args.out_mint)),
         ],
         data: ix_data("fill_begin", &BeginArgs(args.clone(), webauthn)),
     }

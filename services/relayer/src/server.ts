@@ -32,6 +32,7 @@ import {
   type OpenSessionRequest,
   type OwnerActionRequest,
   type RegisterRequest,
+  type RelayerReceipt,
   type SnapshotRequest,
 } from "@ghostlink/common";
 import {
@@ -116,7 +117,7 @@ export function buildServer(deps: RelayerDeps): Server & { drain(): void; readon
 
   /** `rent` is every lamport a program takes beyond the network fee: account rent or the census fee. */
   interface Preparation { instructions: TransactionInstruction[]; rent: bigint; signers?: Keypair[];
-    tokenPairs?: { source: string; destination: string; mint: string }[] }
+    tokenPairs?: RelayerReceipt["tokenPairs"] }
   function paid(path: string, prepare: (request: Parameters<Handler>[0]) => Promise<Preparation>): void {
     router.post(path, async request => {
       throttle(request.raw);
@@ -251,7 +252,7 @@ export function buildServer(deps: RelayerDeps): Server & { drain(): void; readon
     const instructions: TransactionInstruction[] = [computeBudget(400_000)];
     let cost = 0n;
     let extraSigners: Keypair[] = [];
-    let tokenPairs: {source:string;destination:string;mint:string}[] | undefined;
+    let tokenPairs: RelayerReceipt["tokenPairs"];
     switch (req.action) {
       case "sweep": {
         const home = pubkey(req.home, "home");
@@ -269,7 +270,8 @@ export function buildServer(deps: RelayerDeps): Server & { drain(): void; readon
         });
         const prepared = await prepareRecoverySweep(connection,payer.publicKey,pocket,home,parsed);
         instructions.push(...prepared.instructions);cost=prepared.rent;extraSigners=prepared.signers;
-        tokenPairs=prepared.pairs.map(p=>({source:p.source.toBase58(),destination:p.destination.toBase58(),mint:p.mint.toBase58()}));
+        tokenPairs=prepared.pairs.map(p=>({source:p.source.toBase58(),destination:p.destination.toBase58(),mint:p.mint.toBase58(),
+          ...(p.frozen ? { frozen: true as const } : {})}));
         instructions.push(
           sweepHomeIx({
             payer: payer.publicKey,

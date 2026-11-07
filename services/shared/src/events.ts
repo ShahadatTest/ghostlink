@@ -127,6 +127,16 @@ export interface ChangeCanceledEvent {
   pocket: string;
 }
 
+/** An owner sweep cleared a speculative position held in a frozen token account. */
+export interface PositionWrittenOffEvent {
+  kind: "PositionWrittenOff";
+  pocket: string;
+  tokenAccount: string;
+  mint: string;
+  quantity: bigint;
+  costUsdE6: bigint;
+}
+
 export type GhostLinkEvent =
   | RegisteredEvent
   | SnapshotTakenEvent
@@ -136,7 +146,8 @@ export type GhostLinkEvent =
   | SweptHomeEvent
   | SessionRevokedEvent
   | ChangeExecutedEvent
-  | ChangeCanceledEvent;
+  | ChangeCanceledEvent
+  | PositionWrittenOffEvent;
 
 const DISCS: [string, (r: Reader) => GhostLinkEvent][] = [
   [
@@ -204,6 +215,17 @@ const DISCS: [string, (r: Reader) => GhostLinkEvent][] = [
   ["SessionRevoked", (r) => ({ kind: "SessionRevoked", pocket: r.pubkey() })],
   ["ChangeExecuted", (r) => ({ kind: "ChangeExecuted", pocket: r.pubkey() })],
   ["ChangeCanceled", (r) => ({ kind: "ChangeCanceled", pocket: r.pubkey() })],
+  [
+    "PositionWrittenOff",
+    (r) => ({
+      kind: "PositionWrittenOff",
+      pocket: r.pubkey(),
+      tokenAccount: r.pubkey(),
+      mint: r.pubkey(),
+      quantity: r.u64(),
+      costUsdE6: r.u64(),
+    }),
+  ],
 ];
 
 const discTable = DISCS.map(([name, parse]) => ({ disc: eventDisc(name), parse }));
@@ -235,6 +257,7 @@ export const EVENT_EMITTER: Record<GhostLinkEvent["kind"], string> = {
   SessionRevoked: POCKET_PROGRAM_ID,
   ChangeExecuted: POCKET_PROGRAM_ID,
   ChangeCanceled: POCKET_PROGRAM_ID,
+  PositionWrittenOff: POCKET_PROGRAM_ID,
 };
 
 const INVOKE = /^Program (\S+) invoke \[(\d+)\]$/;
