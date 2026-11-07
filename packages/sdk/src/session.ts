@@ -1,5 +1,5 @@
 /**
- * Session signers (build plan 4.2 step 5).
+ * Session signers: the keys that sign intents for a pocket.
  *
  * Software sessions are Ed25519 keypairs held in memory only — never
  * localStorage. Passkey sessions are WebAuthn ES256 credentials; the
@@ -69,8 +69,17 @@ export interface SessionSignature {
   webauthn?: { authenticatorData: Uint8Array; clientDataJson: Uint8Array };
 }
 
+/**
+ * An in-memory Ed25519 session. `seed` (exactly 32 bytes) is copied, so
+ * zeroing or reusing the caller's buffer afterwards cannot change the
+ * signing key behind an unchanged `key32`. Omit it for a random key.
+ */
 export function softwareSession(seed?: Uint8Array): SessionSigner {
-  const secret = seed ?? randomBytes(32);
+  if (seed !== undefined && (!(seed instanceof Uint8Array) || seed.length !== 32)) {
+    throw new Error("session seed must be exactly 32 bytes");
+  }
+  // Uint8Array.from also copies Node Buffers; Buffer.slice would keep an alias.
+  const secret = seed ? Uint8Array.from(seed) : randomBytes(32);
   const pub = ed25519.getPublicKey(secret);
   const key33 = new Uint8Array(33);
   key33.set(pub, 0);
@@ -102,15 +111,17 @@ export function passkeySession(
   compressedPublicKey: Uint8Array,
 ): SessionSigner {
   if (compressedPublicKey.length !== 33) throw new Error("expected 33-byte compressed P-256 key");
+  // Copies, as in softwareSession: later caller writes must not desync key33/key32 or the credential.
+  const key33 = Uint8Array.from(compressedPublicKey), id = Uint8Array.from(credentialId);
   return {
     kind: SESSION_KIND_P256,
-    key33: compressedPublicKey,
-    key32: sha256(compressedPublicKey),
+    key33,
+    key32: sha256(key33),
     async sign(digest) {
       const cred = (await navigator.credentials.get({
         publicKey: {
-          challenge: digest.slice().buffer as ArrayBuffer,
-          allowCredentials: [{ type: "public-key", id: credentialId.slice().buffer as ArrayBuffer }],
+          challenge: Uint8Array.from(digest).buffer as ArrayBuffer,
+          allowCredentials: [{ type: "public-key", id: id.slice().buffer as ArrayBuffer }],
           userVerification: "required",
         },
       })) as PublicKeyCredential;

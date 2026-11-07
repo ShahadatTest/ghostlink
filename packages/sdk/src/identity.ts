@@ -1,5 +1,5 @@
 /**
- * Registration: the only moment a wallet ever signs (build plan 4.1).
+ * Identity derivation and registration: the only messages a wallet signs.
  *
  * The identity secret is SHA-256 of the wallet's deterministic Ed25519
  * signature over the GhostLink sign-in message — a Sign-In-With-Solana
@@ -48,8 +48,19 @@ export interface SolanaSignInInput {
   resources?: string[];
 }
 
+/** One `solana:signIn` output; other fields (account, signatureType) are ignored. */
+export interface SolanaSignInOutput {
+  signedMessage: Uint8Array;
+  signature: Uint8Array;
+}
+
+/**
+ * A wallet's native sign-in. The raw Wallet Standard `solana:signIn`
+ * feature resolves to an array (one output per input); pass it directly,
+ * or a wrapper that returns the single output.
+ */
 export interface SignInFn {
-  (input: SolanaSignInInput): Promise<{ signedMessage: Uint8Array; signature: Uint8Array }>;
+  (input: SolanaSignInInput): Promise<SolanaSignInOutput | readonly SolanaSignInOutput[]>;
 }
 
 /** What a wallet offers: native sign-in when it has it, plain signing always. */
@@ -173,11 +184,11 @@ export async function deriveIdentity(
 
   if (s.signIn) {
     const input = identitySignInInput(options);
-    const r1 = await s.signIn(input);
+    const r1 = signInOutput(await s.signIn(input));
     // Only the fixed text is acceptable: a wallet that injects a nonce or
     // timestamp would make the secret unrepeatable, so use signMessage.
     if (equal(r1.signedMessage, expected)) {
-      const r2 = await s.signIn(input);
+      const r2 = signInOutput(await s.signIn(input));
       if (!equal(r2.signedMessage, expected)) throw new Error("wallet changed the sign-in text between two requests");
       sig1 = r1.signature;
       sig2 = r2.signature;
@@ -210,7 +221,25 @@ export async function deriveIdentity(
   return { secret, sField, commitment: commitment(sField), deterministic, method, withFactor: Boolean(factor) };
 }
 
-/** The registration bundle the relayer needs (it never sees the secret). */
+/**
+ * The cluster tag a registry build checks in registration messages
+ * (`CLUSTER` in programs/registry): "mainnet-beta" for the `mainnet`
+ * feature build, "devnet" for the default build. A local validator runs
+ * the default build, so a localnet registration must name "devnet" or the
+ * program rejects it. Unrelated to the identity's SIWS chain ID, which
+ * still names the actual cluster.
+ */
+export function registrationClusterTag(cluster: Cluster): Cluster {
+  if (cluster === "mainnet-beta") return "mainnet-beta";
+  if (cluster === "devnet" || cluster === "localnet") return "devnet";
+  throw new Error(`unknown cluster ${String(cluster)}`);
+}
+
+/**
+ * The registration bundle the relayer needs (it never sees the secret).
+ * `cluster` is where the registry runs; the signed text carries
+ * `registrationClusterTag(cluster)`, the tag that registry build accepts.
+ */
 export async function buildRegistration(
   identity: DerivedIdentity,
   walletPubkey: Uint8Array,
@@ -218,14 +247,23 @@ export async function buildRegistration(
   cluster: Cluster,
   signMessage: SignMessageFn,
 ): Promise<{ message: Uint8Array; signature: Uint8Array }> {
+  if (walletPubkey.length !== 32 || registryProgramId.length !== 32) throw new Error("wallet and registry program must be 32-byte keys");
   const message = registrationMessage({
     commitment: identity.commitment,
     walletPubkey,
     registryProgramId,
-    cluster,
+    cluster: registrationClusterTag(cluster),
   });
   const signature = await signMessage(message);
   return { message, signature };
+}
+
+/** Unwraps the raw feature's one-element array; anything else is not one sign-in. */
+function signInOutput(result: SolanaSignInOutput | readonly SolanaSignInOutput[]): SolanaSignInOutput {
+  const list = result as readonly SolanaSignInOutput[];
+  const out = Array.isArray(list) ? (list.length === 1 ? list[0] : undefined) : (result as SolanaSignInOutput);
+  if (!out || !(out.signedMessage instanceof Uint8Array)) throw new Error("wallet returned an invalid sign-in result");
+  return out;
 }
 
 function equal(a: Uint8Array, b: Uint8Array): boolean {

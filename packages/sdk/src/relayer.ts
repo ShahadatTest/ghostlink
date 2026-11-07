@@ -1,4 +1,5 @@
 import { bytesToHex, relayerRequestDigest, type RelayerReceipt, type RelayerRequests, type RelayerRoute } from "@ghostlink/common";
+import { unboundFetch } from "./transport.js";
 
 export interface PreparedRelayerOperation<R extends RelayerRoute = RelayerRoute> {
   route: R; requestIdHex: string; digestHex: string; request: RelayerRequests[R];
@@ -11,6 +12,7 @@ export function prepareRelayerOperation<R extends RelayerRoute>(route: R, reques
   return { route, requestIdHex: id, digestHex, request: JSON.parse(JSON.stringify(request)) as RelayerRequests[R] };
 }
 
+/** The outcome is unknown (transport failure, bad receipt, or not yet confirmed): keep the operation and reconcile it. */
 export class RelayerOperationPendingError extends Error {
   constructor(readonly operation: PreparedRelayerOperation, readonly receipt?: RelayerReceipt) {
     super("Relayer operation is not confirmed; retain this operation and reconcile before retrying");
@@ -18,9 +20,25 @@ export class RelayerOperationPendingError extends Error {
   }
 }
 
+/**
+ * The relayer reports a confirmed/finalized execution error for this exact
+ * operation. Retrying it reuses the same request ID and saved transaction,
+ * so it can only return the same failure: inspect `receipt`, fix the cause,
+ * then prepare a new operation (for a session, a new authorization).
+ */
+export class RelayerOperationFailedError extends Error {
+  constructor(readonly operation: PreparedRelayerOperation, readonly receipt: RelayerReceipt) {
+    super("Relayer operation failed on-chain; resubmitting it returns the same failure, so prepare a new operation after fixing the cause");
+    this.name = "RelayerOperationFailedError";
+  }
+}
+
 /** Receipts are provider evidence; independently verify chain effects before granting bot authority. */
 export class RelayerClient {
-  constructor(private readonly endpoint: string, private readonly fetchFn: typeof fetch = globalThis.fetch.bind(globalThis)) {}
+  readonly #fetch: typeof fetch;
+  constructor(private readonly endpoint: string, fetchFn?: typeof fetch) {
+    this.#fetch = unboundFetch(fetchFn);
+  }
   #check(value: unknown, id: string): RelayerReceipt {
     const receipt = value as RelayerReceipt;
     if (!receipt || receipt.requestIdHex !== id || !["preparing", "pending", "confirmed", "finalized", "failed", "unknown"].includes(receipt.state)) throw new Error("invalid relayer receipt");
@@ -38,7 +56,7 @@ export class RelayerClient {
     const id = saved.requestIdHex, url = `${this.endpoint}${saved.route}`;
     const body = JSON.stringify({ ...saved.request, requestIdHex: id });
     let response: Response;
-    try { response = await this.fetchFn(url, { method: "POST", headers: { "content-type": "application/json" }, body }); }
+    try { response = await this.#fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body }); }
     catch { throw new RelayerOperationPendingError(saved); }
     if (response.status >= 500 && response.status !== 502) throw new RelayerOperationPendingError(saved);
     if (!response.ok && response.status !== 502) throw new Error(`relayer submission: HTTP ${response.status}`);
@@ -47,7 +65,7 @@ export class RelayerClient {
   }
   async status(requestIdHex: string): Promise<RelayerReceipt> {
     if (!/^[0-9a-f]{64}$/.test(requestIdHex)) throw new Error("invalid relayer request ID");
-    const response = await this.fetchFn(`${this.endpoint}/submissions/${requestIdHex}`);
+    const response = await this.#fetch(`${this.endpoint}/submissions/${requestIdHex}`);
     if (!response.ok) throw new Error(`relayer status: HTTP ${response.status}`);
     return this.#check(await response.json(), requestIdHex);
   }

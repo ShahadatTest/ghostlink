@@ -1,5 +1,5 @@
 /**
- * Visited-domain list for recovery (build plan 4.5.3): after signing in
+ * Visited-domain list for recovery: after signing in
  * again on a new device, the SDK re-derives every app_id and pocket from
  * the secret plus this list of origins. Storage is injectable; apps on
  * the web can pass localStorage. The list contains no identity secrets,

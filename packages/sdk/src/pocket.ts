@@ -1,6 +1,5 @@
 /**
- * Pocket: funding, intents and the owner-authorized actions
- * (build plan 4.3–4.7).
+ * Pocket: funding, intents and the owner-authorized actions.
  *
  * The SDK recomputes every pocket address from app_id client-side and
  * compares before displaying funding details and builds canonical intent

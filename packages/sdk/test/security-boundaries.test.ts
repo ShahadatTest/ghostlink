@@ -8,7 +8,7 @@ import {
 } from "@ghostlink/common";
 import {
   buildLoginInput, createGhostLinkWallet, createPasskeyFactor, deriveIdentity, derivePocket, fundingOptions,
-  GhostLink, normalizeDerToLowS, proveLogin, softwareSession, sweepDigest,
+  GhostLink, normalizeDerToLowS, proveLogin, RelayerClient, softwareSession, sweepDigest,
 } from "../src/index.js";
 import { verifyLogin } from "../../verify/src/index.js";
 
@@ -24,6 +24,19 @@ describe("browser transport", () => {
     });
     const client = await GhostLink.init({ cluster: "localnet", indexer: "https://indexer.test" });
     await expect(client.roots("registry")).resolves.toEqual({ roots: [] });
+  });
+
+  it("invokes a caller-supplied native fetch without the client as its receiver", async () => {
+    // Like the browser's fetch: any receiver other than the global object is an "Illegal invocation".
+    const nativeFetch = function (this: unknown, url: unknown) {
+      if (this !== undefined && this !== globalThis) throw new TypeError("Illegal invocation");
+      return Promise.resolve(String(url).includes("/submissions/")
+        ? Response.json({ requestIdHex: "01".repeat(32), state: "unknown" })
+        : Response.json({ roots: [] }));
+    } as typeof fetch;
+    const client = await GhostLink.init({ cluster: "localnet", indexer: "https://indexer.test", fetchFn: nativeFetch });
+    await expect(client.roots("registry")).resolves.toEqual({ roots: [] });
+    await expect(new RelayerClient("https://relayer.test", nativeFetch).status("01".repeat(32))).resolves.toMatchObject({ state: "unknown" });
   });
 });
 
@@ -52,8 +65,23 @@ describe("identity boundaries", () => {
       create: async () => ({ rawId: id.buffer, getClientExtensionResults: () => ({ prf: { enabled: true } }) }),
       get,
     } });
-    expect(await createPasskeyFactor({ rpId: "ghostlink.test", userName: "user", userId: new Uint8Array([1]) })).toEqual(sha256(first));
+    expect(await createPasskeyFactor({ rpId: "ghostlink.test", userName: "user", userId: new Uint8Array([1]) }))
+      .toEqual({ factor: sha256(first), credentialId: id });
     expect(get).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("session keys", () => {
+  it("copies a 32-byte seed so wiping or reusing the caller's buffer cannot swap the signing key", async () => {
+    const digest = sha256(new Uint8Array([1]));
+    for (const seed of [new Uint8Array(32).fill(5), Buffer.alloc(32, 6)]) {
+      const session = softwareSession(seed);
+      seed.fill(0);
+      expect(ed25519.verify((await session.sign(digest)).signature, digest, session.key32)).toBe(true);
+    }
+    for (const seed of [new Uint8Array(31), new Uint8Array(33), new Uint8Array(64)]) {
+      expect(() => softwareSession(seed)).toThrow(/session seed must be exactly 32 bytes/);
+    }
   });
 });
 

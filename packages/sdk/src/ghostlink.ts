@@ -1,7 +1,7 @@
 /**
- * The GhostLink facade (build plan section 8). Thin wiring over the pure
- * modules: identity, session, login, pocket. Network calls go through
- * injectable clients so apps, tests and self-hosters can swap endpoints.
+ * The GhostLink facade. Thin wiring over the pure modules: identity,
+ * session, login, pocket. Network calls go through injectable clients so
+ * apps, tests and self-hosters can swap endpoints.
  */
 import {
   Cluster,
@@ -18,6 +18,7 @@ import {
   intentHash,
   pocketAuthorizationContext,
   relayerRequestDigest,
+  splitBytes32,
   toBase58,
   type CensusLatestResponse,
   type IntentRequest,
@@ -39,7 +40,9 @@ import {
   type LoginWitnessData,
   type Prover,
 } from "./login.js";
-import { copySessionPublicKey, softwareSession, type SessionPublicKey, type SessionSigner } from "./session.js";
+import {
+  copySessionPublicKey, sessionCommitmentFor, softwareSession, type SessionPublicKey, type SessionSigner,
+} from "./session.js";
 import {
   derivePocket,
   fundingOptions,
@@ -49,7 +52,8 @@ import {
   type PocketHandle,
   type SignedIntent,
 } from "./pocket.js";
-import { RelayerClient, RelayerOperationPendingError, prepareRelayerOperation } from "./relayer.js";
+import { RelayerClient, RelayerOperationFailedError, RelayerOperationPendingError, prepareRelayerOperation } from "./relayer.js";
+import { unboundFetch } from "./transport.js";
 
 export interface GhostLinkConfig {
   /** V2 is localnet-only until a fresh deployment and migration are verified. */
@@ -64,6 +68,7 @@ export interface GhostLinkConfig {
    * SDK always uses window.location.origin and ignores this.
    */
   origin?: string;
+  /** Any fetch, including the browser's unbound `window.fetch`; it is always called without a receiver. */
   fetchFn?: typeof fetch;
 }
 
@@ -83,6 +88,7 @@ export interface GhostLinkSession extends GhostLinkAuthorization {
 export interface SessionAuthorizationParams {
   identity: DerivedIdentity;
   claim?: Claim;
+  /** A public signal: an exact snapshot slot identifies the snapshot. Prefer `currentSlot`. */
   minSlot?: bigint;
   currentSlot?: bigint;
   witness: LoginWitnessData;
@@ -100,7 +106,7 @@ export class GhostLink {
 
   private constructor(config: GhostLinkConfig) {
     this.config = config;
-    this.fetchFn = config.fetchFn ?? globalThis.fetch.bind(globalThis);
+    this.fetchFn = unboundFetch(config.fetchFn);
   }
 
   static async init(config: GhostLinkConfig): Promise<GhostLink> {
@@ -233,11 +239,18 @@ export class GhostLink {
    * Produces a login proof for this origin. The witness data (registry
    * binding + census snapshot paths) must already be gathered — see
    * `verifiedPath`; the demo app and services wire this end-to-end.
+   *
+   * Every public signal is visible to whoever receives the proof. `home`
+   * is published as an unsalted hash and registered wallets are public,
+   * so a login-only proof (no `policy`) must not bind the wallet: omit
+   * `home` and 32 zero bytes are bound. `minSlot` is published as is: an
+   * exact snapshot slot identifies the snapshot, so prefer `currentSlot`
+   * and let the claim's `maxAgeSlots` derive it.
    */
   async prove(params: {
     identity: DerivedIdentity;
     claim?: Claim;
-    /** Explicit min_slot, or give `currentSlot` and the claim's maxAgeSlots applies. */
+    /** Explicit min_slot, or give `currentSlot` and the claim's maxAgeSlots applies (preferred). */
     minSlot?: bigint;
     currentSlot?: bigint;
     witness: LoginWitnessData;
@@ -247,13 +260,25 @@ export class GhostLink {
      * enforces it as a replay guard): use currentSlot + policy.sessionMaxSlots.
      */
     expirySlot: bigint;
-    home: Uint8Array;
+    /** Pocket recovery address, required with `policy`. Omit for login-only; never the wallet. */
+    home?: Uint8Array;
     /** Omit for off-chain login; supply explicitly to authorize a pocket. */
     policy?: Policy;
   }): Promise<GhostLinkSession> {
     if (!this.config.prover) throw new Error("no prover configured");
+    if (params.policy !== undefined && params.home === undefined) {
+      throw new Error("A pocket authorization requires an explicit home");
+    }
+    // Anyone holding the proof can hash each registered wallet and compare it
+    // with the home signal, so a login-only proof binds zeros, never the wallet.
+    const home = params.home ?? new Uint8Array(32);
+    const wallet = params.witness?.registry?.walletPubkey;
+    if (params.policy === undefined && wallet instanceof Uint8Array && wallet.length === home.length &&
+      wallet.every((byte, i) => byte === home[i])) {
+      throw new Error("A login-only proof must not bind the wallet as home; omit home");
+    }
     const signer = params.session ?? softwareSession();
-    const authorization = await this.prepareAuthorization({ ...params, session: signer });
+    const authorization = await this.prepareAuthorization({ ...params, home, session: signer });
     return { ...authorization, signer };
   }
 
@@ -269,6 +294,7 @@ export class GhostLink {
     // created it. Never classify a bot-supplied key as passkey-held authority.
     if (params.session?.kind !== 0) throw new Error("Delegated bots require an Ed25519 session public key");
     if (!params.policy) throw new Error("Bot authorization requires an explicit approved policy");
+    if (!(params.home instanceof Uint8Array)) throw new Error("Bot authorization requires an explicit home");
     return this.prepareAuthorization(params);
   }
 
@@ -336,9 +362,16 @@ export class GhostLink {
   }
 
   /**
-   * Opens (or rotates) the pocket session through the relayer. Roots and
-   * the domain hash come from the proof's own public signals, so they can
-   * never disagree with what was proved.
+   * Opens (or rotates) the pocket session through the relayer. The program
+   * rebuilds the proof's public inputs from this request, so every value
+   * sent must equal the proved one: the session key and expiry,
+   * `claimFields`, and `roots` and `domainHash` when supplied (omitted,
+   * they are read from the proof). A mismatch is refused before sending.
+   *
+   * Throws `RelayerOperationPendingError` while the outcome is unknown
+   * (keep `error.operation` and reconcile it), and
+   * `RelayerOperationFailedError` when the relayer reports a final
+   * on-chain failure: resubmitting the same authorization returns it again.
    */
   async openSession(
     session: GhostLinkAuthorization,
@@ -349,12 +382,17 @@ export class GhostLink {
   ): Promise<TxResponse> {
     if (!this.config.relayer) throw new Error("no relayer configured");
     this.checkPocketAuthorization(session, pocket);
-    const signals = session.proof.publicSignals;
-    const bound = {
-      registry: roots?.registry ?? fieldFromDecimal(signals[0]),
-      census: roots?.census ?? fieldFromDecimal(signals[1]),
-      domainHash: domainHash ?? fieldFromDecimal(signals[2]),
-    };
+    const signals = session.proof.publicSignals.map((s) => fieldFromDecimal(s));
+    const bound = { registry: signals[0]!, census: signals[1]!, domainHash: signals[2]! };
+    const mint = splitBytes32(claimFields.mint), signer = copySessionPublicKey(session.signer);
+    // A mismatch would only make the program reject the proof after the relayer paid for it.
+    if (mint.hi !== signals[4] || mint.lo !== signals[5] || claimFields.threshold !== signals[6] ||
+      claimFields.minSlot !== signals[7] || (claimFields.claim ? 1n : 0n) !== signals[10] ||
+      sessionCommitmentFor(signer, session.expirySlot) !== signals[8] ||
+      (roots !== undefined && (roots.registry !== bound.registry || roots.census !== bound.census)) ||
+      (domainHash !== undefined && domainHash !== bound.domainHash)) {
+      throw new Error("Claim fields, session, roots or domain hash do not match the proof's public signals");
+    }
     const req: OpenSessionRequest = {
       proofAHex: bytesToHex(session.proof.proof.a),
       proofBHex: bytesToHex(session.proof.proof.b),
@@ -367,8 +405,8 @@ export class GhostLink {
       threshold: claimFields.threshold.toString(),
       minSlot: claimFields.minSlot.toString(),
       claimHoldings: claimFields.claim,
-      sessionKind: session.signer.kind,
-      sessionKeyHex: bytesToHex(session.signer.key33),
+      sessionKind: signer.kind,
+      sessionKeyHex: bytesToHex(signer.key33),
       sessionExpirySlot: session.expirySlot.toString(),
       home: toBase58(pocket.home),
       policy: policyToDto(pocket.policy),
@@ -376,6 +414,8 @@ export class GhostLink {
     // Same authorization/body keeps one identity even when this convenience method is called again after a lost reply.
     const operation = prepareRelayerOperation("/open-session", req, relayerRequestDigest("/open-session", req));
     const receipt = await new RelayerClient(this.config.relayer, this.fetchFn).submit(operation);
+    // The request ID is deterministic, so a retry of a final failure only replays it; never call that pending.
+    if (receipt.state === "failed") throw new RelayerOperationFailedError(operation, receipt);
     if (receipt.state !== "confirmed" && receipt.state !== "finalized") throw new RelayerOperationPendingError(operation, receipt);
     return { signature: receipt.signature! };
   }

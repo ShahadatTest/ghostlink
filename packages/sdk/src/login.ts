@@ -1,5 +1,5 @@
 /**
- * Login and proving (build plan 4.2).
+ * Login and proving.
  *
  * GhostLink.prove uses the current page origin. The pure helpers below
  * accept an explicit origin; code given the identity secret can derive

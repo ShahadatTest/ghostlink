@@ -1,5 +1,5 @@
 /**
- * Wallet Standard facade (build plan, section 8).
+ * Wallet Standard facade.
  *
  * Registers GhostLink with `standard:connect` and a custom
  * `ghostlink:signIn` feature returning a proof and a signed challenge.
@@ -11,7 +11,7 @@
  * `wallet-standard:register-wallet` event) with no dependency on the
  * reference packages.
  */
-import { loginChallengeDigest, pocketPda, toBase58 } from "@ghostlink/common";
+import { bytesToHex, loginChallengeDigest, pocketPda, toBase58 } from "@ghostlink/common";
 import type { GhostLinkSession } from "./ghostlink.js";
 import type { SessionKind, SessionSignature } from "./session.js";
 export { loginChallengeDigest };
@@ -35,10 +35,20 @@ export interface WalletStandardAccount {
 export interface GhostLinkWalletOptions {
   /** Runs the GhostLink login flow and resolves with the session. */
   login: () => Promise<GhostLinkSession>;
+  /**
+   * Chain advertised for the pocket account; defaults to "solana:localnet".
+   * Like `GhostLink.init`, other chains are refused until V2 has a
+   * verified devnet or mainnet deployment.
+   */
   chain?: "solana:mainnet" | "solana:devnet" | "solana:localnet";
   name?: string;
 }
 
+/**
+ * What `ghostlink:signIn` resolves to. It holds byte arrays and a bigint
+ * (`session.expirySlot`), so `JSON.stringify` throws on it: send
+ * `signInOutputToDto(output)` to the backend instead.
+ */
 export interface GhostLinkSignInOutput {
   account: WalletStandardAccount;
   /** Pass this and publicSignals to @ghostlink/verify. */
@@ -49,9 +59,38 @@ export interface GhostLinkSignInOutput {
   challengeSignature: SessionSignature;
 }
 
+/** JSON-safe sign-in output: bytes as lowercase hex, the expiry slot as a decimal string. */
+export interface GhostLinkSignInDto {
+  account: { address: string; chains: string[] };
+  proof: object;
+  publicSignals: string[];
+  session: { kind: SessionKind; key32Hex: string; key33Hex: string; expirySlot: string };
+  challengeSignature: { signatureHex: string; webauthn?: { authenticatorDataHex: string; clientDataJsonUtf8: string } };
+}
+
+/** Encodes a sign-in output for the wire; the backend decodes it before @ghostlink/verify. */
+export function signInOutputToDto(output: GhostLinkSignInOutput): GhostLinkSignInDto {
+  const { session, challengeSignature: signed } = output;
+  return {
+    account: { address: output.account.address, chains: [...output.account.chains] },
+    proof: JSON.parse(JSON.stringify(output.proof)) as object,
+    publicSignals: [...output.publicSignals],
+    session: { kind: session.kind, key32Hex: bytesToHex(session.key32), key33Hex: bytesToHex(session.key33), expirySlot: session.expirySlot.toString() },
+    challengeSignature: {
+      signatureHex: bytesToHex(signed.signature),
+      ...(signed.webauthn && { webauthn: {
+        authenticatorDataHex: bytesToHex(signed.webauthn.authenticatorData),
+        clientDataJsonUtf8: new TextDecoder().decode(signed.webauthn.clientDataJson),
+      } }),
+    },
+  };
+}
+
 /** Builds the wallet object; exported separately for tests. */
 export function createGhostLinkWallet(options: GhostLinkWalletOptions) {
-  const chain = options.chain ?? "solana:devnet";
+  const chain = options.chain ?? "solana:localnet";
+  // Advertising devnet or mainnet would send dApps to a chain with no V2 pocket.
+  if (chain !== "solana:localnet") throw new Error("This V2 SDK has no verified devnet or mainnet deployment; use solana:localnet");
   let accounts: WalletStandardAccount[] = [];
   let connecting: Promise<GhostLinkSession> | undefined;
   const listeners = new Map<string, Set<(...args: unknown[]) => void>>();
