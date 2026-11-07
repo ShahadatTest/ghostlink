@@ -1,0 +1,60 @@
+name: release
+
+# Publishes the public packages to npm with provenance. Run it by hand from
+# the Actions tab, first with dry-run on, then off. See RELEASING.md.
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Build, test and pack only; publish nothing
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  id-token: write # npm provenance
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    # Holds the NPM_TOKEN secret. Add required reviewers to the environment
+    # to approve every publish by hand.
+    environment: npm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -r build
+      - run: pnpm -r test
+      - run: pnpm test:package
+      # Packs every archive below (including service-kit and bot) into
+      # artifacts/sdk and installs them into a clean consumer.
+      - run: pnpm test:package:bot
+      - name: Publish in dependency order
+        env:
+          DRY_RUN: ${{ inputs.dry_run }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          for dir in packages/common packages/sdk packages/verify packages/prover-wasm packages/react services/shared packages/bot; do
+            name=$(node -p "require('./$dir/package.json').name")
+            version=$(node -p "require('./$dir/package.json').version")
+            tarball="artifacts/sdk/$(echo "$name" | sed 's#^@##; s#/#-#')-$version.tgz"
+            test -f "$tarball"
+            if npm view "$name@$version" version >/dev/null 2>&1; then
+              echo "$name@$version is already on npm; skipping"
+            elif [ "$DRY_RUN" = "true" ]; then
+              npm publish "$tarball" --access public --dry-run
+            else
+              npm publish "$tarball" --access public --provenance
+            fi
+          done
