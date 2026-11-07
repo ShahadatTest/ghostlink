@@ -1,0 +1,79 @@
+name: Bug report
+description: Something in the SDK, programs, circuits or services behaves incorrectly.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping make GhostLink better. **Security vulnerabilities do not belong here.** Follow [SECURITY.md](https://github.com/Ghostlink-Labs/ghostlink/blob/main/SECURITY.md) instead.
+
+        Never paste secret keys, identity secrets, seed phrases, private RPC URLs or `.env` contents.
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - "@ghostlink/sdk"
+        - "@ghostlink/common"
+        - "@ghostlink/verify"
+        - "@ghostlink/prover-wasm"
+        - "@ghostlink/react"
+        - "@ghostlink/bot"
+        - Solana programs (registry, census, pocket, verifier)
+        - Circuits
+        - Indexer
+        - Relayer
+        - Solver
+        - Actions
+        - Watcher
+        - Scripts, CI or tooling
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: The behaviour you saw, including the full error message.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Minimal reproduction
+      description: Steps, a code snippet or a failing test. Use a local validator and disposable keys.
+      render: shell
+    validations:
+      required: true
+  - type: input
+    id: revision
+    attributes:
+      label: Revision
+      description: The commit hash or branch you tested (`git rev-parse HEAD`).
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Node and pnpm versions, and for program or circuit issues Rust, Agave and circom versions.
+      placeholder: |
+        OS: Ubuntu 24.04
+        Node: 22.x, pnpm 10.33.2
+        Rust 1.97.1, Agave 3.0.14, circom 2.2.3
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: This is not a security vulnerability.
+          required: true
+        - label: I removed secrets, keys and private URLs from everything above.
+          required: true

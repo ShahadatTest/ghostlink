@@ -1,0 +1,37 @@
+name: Feature or integration request
+description: Propose an SDK capability, adapter, policy type or developer-experience improvement.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Good requests describe the problem first. If you plan to build it yourself, say so. Maintainers can help you scope it before you write code.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you trying to do, and what stops you today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: The API, behaviour or change you have in mind. Code sketches are welcome.
+    validations:
+      required: true
+  - type: textarea
+    id: security
+    attributes:
+      label: Authority and security impact
+      description: Does this change who can move funds, what a proof binds, an account layout or a trust boundary? If not sure, say so.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: checkboxes
+    id: contribute
+    attributes:
+      label: Contribution
+      options:
+        - label: I would like to implement this myself.

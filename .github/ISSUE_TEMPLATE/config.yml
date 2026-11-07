@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/Ghostlink-Labs/ghostlink/blob/main/SECURITY.md
+    about: Never open a public issue for a vulnerability. Follow the private reporting procedure.
+  - name: Read the integration guide
+    url: https://github.com/Ghostlink-Labs/ghostlink/blob/main/docs/INTEGRATIONS.md
+    about: What an integration must do itself, and what GhostLink does and does not guarantee.
