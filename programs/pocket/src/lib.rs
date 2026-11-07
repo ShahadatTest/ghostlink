@@ -19,7 +19,8 @@
 //! - every root is checked against a 128-root history ring, never a
 //!   single current root;
 //! - `fill_end` measures delivery on the very token account `fill_begin`
-//!   snapshotted;
+//!   snapshotted, and measures a wrapped-SOL account in lamports, so its
+//!   unsynced lamports are part of the snapshot;
 //! - a captured `open_session` cannot be replayed: each session must
 //!   expire later than every session before it.
 
@@ -391,7 +392,8 @@ pub mod ghostlink_pocket {
         fill.in_max = args.in_max;
         fill.out_mint = args.out_mint;
         fill.out_min = args.out_min;
-        fill.out_balance_before = pocket_out.amount;
+        // Wrapped SOL is measured in lamports, synced or not.
+        fill.out_balance_before = pocket_out.delivery_balance();
         fill.out_account = ctx.accounts.pocket_out_account.key();
         fill.in_value_usd_e6 = in_value_usd_e6;
         fill.passkey_signed = passkey_signed;
@@ -437,8 +439,10 @@ pub mod ghostlink_pocket {
             pocket_out.owner == pocket_key && pocket_out.mint == args.out_mint && pocket_out.can_close(&pocket_key),
             PocketError::BadTokenAccount
         );
+        // Measured like the snapshot: a route that only syncs lamports the
+        // pocket already held delivers nothing.
         let received = pocket_out
-            .amount
+            .delivery_balance()
             .checked_sub(fill.out_balance_before)
             .ok_or(error!(PocketError::OutputTooLow))?;
         require!(received >= args.out_min, PocketError::OutputTooLow);

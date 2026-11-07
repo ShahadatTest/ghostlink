@@ -19,11 +19,25 @@ pub struct ParsedTokenAccount {
     pub close_authority: Option<Pubkey>,
     /// Frozen by its mint's freeze authority: no transfer or close succeeds.
     pub frozen: bool,
+    /// Wrapped SOL: SPL's `is_native` is set.
+    pub native: bool,
+    /// The account's lamports when it was parsed.
+    pub lamports: u64,
 }
 
 impl ParsedTokenAccount {
     pub fn can_close(&self, owner: &Pubkey) -> bool {
         self.close_authority.map_or(true, |authority| authority == *owner)
+    }
+
+    /// The balance a fill measures delivery on: the token amount, or for
+    /// wrapped SOL the account's lamports. Lamports move only with real
+    /// transfers. SyncNative merely copies lamports the account already
+    /// holds into its amount, and can also lower the recorded rent reserve
+    /// to the current rent, so neither can make the pocket's own lamports
+    /// count as delivery.
+    pub fn delivery_balance(&self) -> u64 {
+        if self.native { self.lamports } else { self.amount }
     }
 }
 
@@ -57,6 +71,11 @@ pub fn parse_token_account_any_state(info: &AccountInfo) -> Result<ParsedTokenAc
         [1, 0, 0, 0] => Some(Pubkey::try_from(&data[76..108]).unwrap()),
         _ => return err!(PocketError::BadTokenAccount),
     };
+    let native = match &data[109..113] {
+        [0, 0, 0, 0] => false,
+        [1, 0, 0, 0] => true,
+        _ => return err!(PocketError::BadTokenAccount),
+    };
     Ok(ParsedTokenAccount {
         mint: Pubkey::try_from(&data[0..32]).unwrap(),
         owner: Pubkey::try_from(&data[32..64]).unwrap(),
@@ -64,6 +83,8 @@ pub fn parse_token_account_any_state(info: &AccountInfo) -> Result<ParsedTokenAc
         delegate,
         close_authority,
         frozen,
+        native,
+        lamports: info.lamports(),
     })
 }
 
@@ -147,4 +168,21 @@ pub fn close_pocket_account<'info>(
         &[pocket_seeds],
     )
     .map_err(Into::into)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn account(amount: u64, native: bool, lamports: u64) -> ParsedTokenAccount {
+        ParsedTokenAccount { mint: Pubkey::default(), owner: Pubkey::default(), amount, delegate: None,
+            close_authority: None, frozen: false, native, lamports }
+    }
+
+    #[test]
+    fn wrapped_sol_delivery_is_measured_in_lamports() {
+        assert_eq!(account(5, false, 999).delivery_balance(), 5);
+        // Synced or not, every lamport of a native account is in its balance.
+        assert_eq!(account(5, true, 2_039_380).delivery_balance(), 2_039_380);
+    }
 }

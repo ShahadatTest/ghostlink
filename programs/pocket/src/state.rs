@@ -296,6 +296,8 @@ pub struct FillState {
     pub in_max: u64,
     pub out_mint: Pubkey,
     pub out_min: u64,
+    /// `out_account`'s delivery balance before the route: its token
+    /// amount, or for wrapped SOL its lamports, synced or not.
     pub out_balance_before: u64,
     pub in_value_usd_e6: u64,
     pub passkey_signed: bool,

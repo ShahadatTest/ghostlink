@@ -20,6 +20,7 @@ const UNIX_T: i64 = 1_800_000_000;
 const TIMELOCK_SLOTS: u64 = 216_000;
 
 // Custom error codes: 6000 + the variant's position in PocketError.
+const OUTPUT_TOO_LOW: &str = "Custom(6029)";
 const BAD_TOKEN_ACCOUNT: &str = "Custom(6033)";
 const POSITIONS_OPEN: &str = "Custom(6046)";
 const FREEZABLE_MINT: &str = "Custom(6047)";
@@ -471,4 +472,65 @@ fn session_sweeps_skip_a_frozen_account_without_writing_it_off() {
             &100u64.to_le_bytes(), &10_000_000u64.to_le_bytes()])));
     assert_eq!(positions(&w), vec![(token.mint, token.pocket_account, 100, 10_000_000)],
         "only an owner proof writes off a position");
+}
+
+// ---- Finding 5: unsynced wrapped SOL ---------------------------------------
+
+/// The rent-exempt reserve SPL records in a native account's is_native field.
+const NATIVE_RESERVE: u64 = 2_039_280;
+
+/// A wrapped-SOL token account: SPL's is_native reserve is set, the token
+/// amount says `amount`, and `unsynced` more lamports sit in it unsynced.
+fn native_account(mint: &[u8; 32], owner: &Pubkey, amount: u64, unsynced: u64) -> solana_account::Account {
+    let mut account = token_account(mint, owner, amount);
+    account.data[109..113].copy_from_slice(&1u32.to_le_bytes());
+    account.data[113..121].copy_from_slice(&NATIVE_RESERVE.to_le_bytes());
+    account.lamports = NATIVE_RESERVE + amount + unsynced;
+    account
+}
+
+/// SPL Token SyncNative (instruction 17): anyone may call it.
+fn sync_native(account: &Pubkey) -> Instruction {
+    Instruction { program_id: pk(TOKEN_ID), accounts: vec![meta_w(*account)], data: vec![17] }
+}
+
+#[test]
+fn unsynced_wrapped_sol_in_the_output_account_never_counts_as_delivery() {
+    let mut w = world(false);
+    // The pocket's wrapped-SOL output account already holds 0.16 SOL that
+    // someone sent as plain lamports and nobody synced. The SPL is_native
+    // field, not the mint, is what makes an account native.
+    let (pocket_wsol, solver_wsol) = (Pubkey::new_unique(), Pubkey::new_unique());
+    let (sol, pocket, solver) = (w.sol, w.pocket, w.solver.pubkey());
+    w.h.svm.set_account(pocket_wsol, native_account(&sol, &pocket, 0, 160_000_000)).unwrap();
+    w.h.svm.set_account(solver_wsol, native_account(&sol, &solver, 1_000_000_000, 0)).unwrap();
+    let legs = Legs { pocket_out: pocket_wsol, solver_out: solver_wsol, ..priced(&w) };
+    let args = intent(&w, 7, w.usdc, 25_000_000, w.sol, 160_000_000);
+    let watched = [w.pocket_usdc, w.solver_usdc, pocket_wsol, solver_wsol];
+
+    // A route that only syncs the pocket's own lamports delivers nothing.
+    let tx = fill_tx(&w, &args, &legs, vec![sync_native(&pocket_wsol)]);
+    refused_without_movement(&mut w, &tx, OUTPUT_TOO_LOW, &watched);
+    // Syncing them and topping up with less than the minimum is still short.
+    // (This token program's SyncNative also lowers the recorded rent reserve
+    // to the current rent, so "lamports minus reserve" would count part of
+    // the pocket's own reserve as delivery here; lamports do not move.)
+    let tx = fill_tx(&w, &args, &legs, vec![sync_native(&pocket_wsol),
+        spl_transfer(&solver_wsol, &pocket_wsol, &solver, 159_999_999)]);
+    refused_without_movement(&mut w, &tx, OUTPUT_TOO_LOW, &watched);
+
+    // A real delivery is measured above the unsynced balance and settles.
+    fill(&mut w, &args, &legs, 160_000_000).expect("delivery on top of unsynced lamports");
+    assert_eq!(w.h.svm.get_account(&pocket_wsol).unwrap().lamports, NATIVE_RESERVE + 320_000_000,
+        "the pocket keeps its own lamports and receives the full delivery");
+    assert_eq!(w.h.token_balance(&w.solver_usdc), Some(25_000_000));
+
+    // Lamports a route adds during the fill are delivery, synced or not.
+    let args = intent(&w, 8, w.usdc, 25_000_000, w.sol, 160_000_000);
+    let lamports = Instruction { program_id: pk(SYSTEM_ID), accounts: vec![AccountMeta::new(solver, true), meta_w(pocket_wsol)],
+        data: [2u32.to_le_bytes().as_slice(), 160_000_000u64.to_le_bytes().as_slice()].concat() };
+    let tx = fill_tx(&w, &args, &legs, vec![lamports]);
+    let solver_key = w.solver.clone();
+    w.h.send(&tx, &[&solver_key]).expect("an unsynced delivery during the fill counts");
+    assert_eq!(w.h.token_balance(&w.solver_usdc), Some(50_000_000));
 }
