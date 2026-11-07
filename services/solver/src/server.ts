@@ -1,5 +1,5 @@
 /**
- * The reference solver. Fill shape (build plan 4.4):
+ * The reference solver. Fill shape:
  *   [precompile over SHA-256(intent)] [fill_begin] [route] [fill_end]
  * all in one transaction — token movements revert together if out_min
  * is not delivered. Solana network fees can still be charged on failure.
@@ -137,7 +137,9 @@ export function buildServer(deps: SolverDeps): Server & { operations: SolverOper
       const pocket = new PublicKey(v.intent.pocket);
       const inMint = new PublicKey(v.intent.inMint);
       const outMint = new PublicKey(v.intent.outMint);
-      if (!pocketLimiter.allow(pocket.toBase58())) throw new HttpError(429, "rate limited for this pocket");
+      // validateIntent only checks the key supplied with the request; anyone can name any pocket.
+      // Charge the pocket's quota only once its current session has authorized the intent.
+      const admit = () => { if (!pocketLimiter.allow(pocket.toBase58())) throw new HttpError(429, "rate limited for this pocket"); };
 
       try {
         const result = await submissions.submit(v, async minimumSlot => {
@@ -150,7 +152,7 @@ export function buildServer(deps: SolverDeps): Server & { operations: SolverOper
             deps.maxQuoteSpreadBps ?? 100, deps.allowUnpriced ?? false);
           if (!economics.ok) throw new HttpError(400, economics.reason ?? "quote refused");
           return prepare(v, pocket, inMint, outMint, minimumSlot);
-        });
+        }, admit);
         return { status: ["preparing", "pending", "unknown"].includes(result.state) ? 202 : 200,
           json: result, headers: { "cache-control": "no-store" } };
       } catch (error) {

@@ -44,7 +44,8 @@ export class SubmissionCoordinator {
     if (!Number.isSafeInteger(value) || value < minimum) throw new Error("RPC context is stale");
   }
 
-  async #recovery(pocket: PublicKey) {
+  /** `persist` false evaluates the recovery plan without advancing it; see authorize. */
+  async #recovery(pocket: PublicKey, persist = true) {
     const recoveryId = this.#journal.recoveryId;
     if (!recoveryId) return;
     await this.#genesis();
@@ -57,11 +58,10 @@ export class SubmissionCoordinator {
     if (!response.value) throw new IntentAuthorizationError("recovery pocket not found");
     const account = readPocketAccount(response.value);
     if (!pocketPda(account.appId).equals(pocket)) throw new IntentAuthorizationError();
-    const rotated = this.#journal.recoveredAuthority(pocket.toBase58(), {
-      sessionKind: account.sessionKind, sessionKeyHex: bytesToHex(account.sessionKey),
-      maxSessionExpirySlot: account.maxSessionExpirySlot.toString(), slot: response.context.slot,
-    });
-    return { recoveryId, account, slot: response.context.slot,
+    const authority = { sessionKind: account.sessionKind, sessionKeyHex: bytesToHex(account.sessionKey),
+      maxSessionExpirySlot: account.maxSessionExpirySlot.toString(), slot: response.context.slot };
+    const rotated = this.#journal.recoveredAuthority(pocket.toBase58(), authority, persist);
+    return { recoveryId, account, authority, slot: response.context.slot,
       rotationRequired: !rotated || account.sessionExpirySlot <= BigInt(response.context.slot) };
   }
 
@@ -87,33 +87,48 @@ export class SubmissionCoordinator {
     return state ? { recoveryId: state.recoveryId, rotationRequired: state.rotationRequired, slot: state.slot } : { rotationRequired: false };
   }
 
-  /** On-chain authority is checked before creating any durable nonce claim or preparing fees. */
+  /**
+   * On-chain authority is checked before creating any durable nonce claim or preparing fees.
+   * validateIntent only proves the signature matches the key in the request, so anyone can sign an
+   * intent naming another pocket. Durable per-pocket context (the authorization floor and recovery
+   * progress) therefore moves only on evidence attributable to that pocket's session: a retry of an
+   * intent this journal already authorized, the signer's own session observed revoked or expired
+   * (remembered so a lagging provider cannot reverse it), or a successful authorization.
+   */
   async authorize(v: ValidatedIntent, minimumSlot = 0): Promise<number> {
     const id = bytesToHex(v.hash), prior = this.#journal.get(id);
     await this.#genesis();
     const head = await this.#rpc(this.#chain.getSlot("confirmed")); this.#context(head, 0);
-    const pocket = new PublicKey(v.intent.pocket);
+    const pocket = new PublicKey(v.intent.pocket), address = pocket.toBase58();
     const slot = Math.max(head, minimumSlot, prior?.authorizationSlot ?? 0, prior?.transaction?.minContextSlot ?? 0,
-      this.#journal.authorizationSlot(pocket.toBase58()));
-    const response = await this.#rpc(this.#chain.getAccountInfoAndContext(new PublicKey(v.intent.pocket), { commitment: "confirmed", minContextSlot: slot }));
+      this.#journal.authorizationSlot(address));
+    const response = await this.#rpc(this.#chain.getAccountInfoAndContext(pocket, { commitment: "confirmed", minContextSlot: slot }));
     this.#context(response.context.slot, slot);
-    this.#journal.authorizedContext(id, response.context.slot);
     if (!response.value) throw new IntentAuthorizationError("pocket not found");
     const a = readPocketAccount(response.value);
     if (!pocketPda(a.appId).equals(pocket)) throw new IntentAuthorizationError();
-    this.#journal.observePocketContext(pocket.toBase58(), response.context.slot);
-    const recovery = await this.#recovery(pocket);
+    const key = new Uint8Array(33); key.set(v.sessionKey);
+    const signer = (account: typeof a) => account.sessionKind === v.sessionKind && Buffer.from(account.sessionKey).equals(Buffer.from(key));
+    const attributable = prior !== undefined || (signer(a) && a.sessionExpirySlot <= BigInt(response.context.slot));
+    const remember = () => {
+      this.#journal.authorizedContext(id, response.context.slot);
+      this.#journal.observePocketContext(address, response.context.slot);
+    };
+    if (attributable) remember();
+    const recovery = await this.#recovery(pocket, attributable);
     if (recovery && (recovery.rotationRequired || recovery.account.sessionKind !== a.sessionKind ||
       !Buffer.from(recovery.account.sessionKey).equals(Buffer.from(a.sessionKey)))) {
       throw new IntentAuthorizationError("restored journal requires a fresh owner session finalized after the recovery baseline");
     }
     const authorizationSlot = Math.max(response.context.slot, recovery?.slot ?? 0);
-    const key = new Uint8Array(33); key.set(v.sessionKey);
     for (const account of recovery ? [a, recovery.account] : [a]) {
-      if (account.sessionKind !== v.sessionKind ||
-        !Buffer.from(account.sessionKey).equals(Buffer.from(key)) || !Buffer.from(policyHash(account.policy)).equals(Buffer.from(v.intent.policyHash)) ||
+      if (!signer(account) || !Buffer.from(policyHash(account.policy)).equals(Buffer.from(v.intent.policyHash)) ||
         account.sessionExpirySlot <= BigInt(authorizationSlot) || v.intent.deadlineSlot < BigInt(authorizationSlot) ||
         isPocketNonceUsed(account, v.intent.nonce)) throw new IntentAuthorizationError();
+    }
+    if (!attributable) {
+      remember();
+      if (recovery) this.#journal.recoveredAuthority(address, recovery.authority);
     }
     return authorizationSlot;
   }
@@ -130,12 +145,21 @@ export class SubmissionCoordinator {
       !ed25519.verify(tx.signatures[0]!, tx.message.serialize(), payer.toBytes())) throw new Error("transaction identity does not match journal");
   }
 
-  async submit(v: ValidatedIntent, prepare: (minimumSlot: number) => Promise<PreparedTransaction>): Promise<IntentSubmission> {
+  /**
+   * `admit` (e.g. a per-pocket quota) runs at most once per call and only after authorization
+   * succeeds, so a caller who cannot sign for the pocket's session cannot spend that pocket's
+   * admission. It precedes any claim or send.
+   */
+  async submit(v: ValidatedIntent, prepare: (minimumSlot: number) => Promise<PreparedTransaction>,
+    admit: () => void = () => {}): Promise<IntentSubmission> {
+    let admitted = false;
+    const admitOnce = () => { if (!admitted) { admitted = true; admit(); } };
     const identity = identityFor(v);
     await this.#genesis();
     let record = this.#journal.matching(identity);
     if (!record?.transaction) {
       const slot = await this.authorize(v);
+      admitOnce();
       const claim = this.#journal.claim(identity); record = claim.record;
       if (claim.token) {
         try {
@@ -152,6 +176,7 @@ export class SubmissionCoordinator {
     if (observation.state !== "pending") return observation;
     try {
       const authorizationSlot = await this.authorize(v, record.transaction.minContextSlot);
+      admitOnce(); // Over quota skips only this rebroadcast; the saved packet is still reconciled below.
       this.#journal.authorizedContext(identity.intentHashHex, authorizationSlot); // Fence a newer concurrent account observation.
       const tx = record.transaction;
       const returned = await this.#rpc(this.#chain.sendRawTransaction(Buffer.from(tx.rawBase64, "base64"), {

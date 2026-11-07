@@ -154,8 +154,12 @@ export class SubmissionJournal {
       this.#saveRecovery(pocket, { baseline: structuredClone(authority), expected: structuredClone(expected), finalizedSlot: prior?.finalizedSlot ?? 0 });
     });
   }
-  /** Caller must verify finalized account ownership, layout, PDA and RPC genesis first. */
-  recoveredAuthority(pocket: string, authority: RecoveryAuthority): boolean {
+  /**
+   * Caller must verify finalized account ownership, layout, PDA and RPC genesis first. With
+   * `persist` false the plan is evaluated without advancing its finalized floor, so a request
+   * that is later refused leaves recovery state unchanged.
+   */
+  recoveredAuthority(pocket: string, authority: RecoveryAuthority, persist = true): boolean {
     this.#assertActive();
     if (!this.recoveryId) return true;
     this.#validateAuthority(authority);
@@ -163,7 +167,7 @@ export class SubmissionJournal {
       const plan = this.#recoveryPlan(pocket);
       if (!plan) return false;
       if (authority.slot < Math.max(plan.baseline.slot, plan.finalizedSlot)) throw new Error("finalized recovery context is stale");
-      plan.finalizedSlot = authority.slot; this.#saveRecovery(pocket, plan);
+      if (persist) { plan.finalizedSlot = authority.slot; this.#saveRecovery(pocket, plan); }
       return authority.slot > plan.baseline.slot && BigInt(authority.maxSessionExpirySlot) > BigInt(plan.baseline.maxSessionExpirySlot) &&
         authority.sessionKind === plan.expected.sessionKind && authority.sessionKeyHex === plan.expected.sessionKeyHex;
     });
@@ -184,7 +188,11 @@ export class SubmissionJournal {
     this.#storage.db.prepare("INSERT INTO pocket_contexts VALUES (?,?) ON CONFLICT(pocket) DO UPDATE SET record=excluded.record")
       .run(pocket, this.#storage.seal(Buffer.from(JSON.stringify(slot)), this.#contextAad(pocket)));
   }
-  /** Call only after checking the account's program, layout and PDA, even when its session is refused. */
+  /**
+   * Call only after checking the account's program, layout and PDA, and only for evidence attributable
+   * to the pocket's session (see SubmissionCoordinator.authorize): an unauthenticated caller must not
+   * move another pocket's floor.
+   */
   observePocketContext(pocket: string, slot: number): void {
     this.#storage.transaction(() => { this.#assertActive(); this.#advanceContext(pocket, slot); });
   }

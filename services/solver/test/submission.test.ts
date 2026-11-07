@@ -289,6 +289,37 @@ describe("durable submission and reconciliation", () => {
     expect(w.chain.sendRawTransaction).not.toHaveBeenCalled();
   });
 
+  it("does not let an intent signed by an unrelated key consume the pocket's admission or move its floor", async () => {
+    const w = world(), journal = w.journal(), m = w.manager(journal), pocket = identityFor(w.v).pocket, admit = vi.fn();
+    await m.submit(w.v, w.prepare, admit);
+    expect(admit).toHaveBeenCalledOnce(); expect(journal.authorizationSlot(pocket)).toBe(100);
+    const attacker = Keypair.generate(), intent = { ...w.v.intent, nonce: 9n }, hash = intentHash(intent);
+    const forged: ValidatedIntent = { intent, hash, sessionKind: 0, sessionKey: attacker.publicKey.toBytes(),
+      signature: ed25519.sign(hash, attacker.secretKey.subarray(0, 32)) };
+    w.bank(200);
+    for (let i = 0; i < 3; i++) await expect(m.submit(forged, w.prepare, admit)).rejects.toThrow(/authorized/);
+    expect(admit).toHaveBeenCalledOnce(); expect(journal.authorizationSlot(pocket)).toBe(100);
+    expect(journal.get(identityFor(forged).intentHashHex)).toBeUndefined();
+    // The pocket's own session is admitted and advances the floor as before.
+    await m.submit(w.intentAt(8n), w.prepare, admit);
+    expect(admit).toHaveBeenCalledTimes(2); expect(journal.authorizationSlot(pocket)).toBe(200);
+    expect(w.prepare).toHaveBeenCalledTimes(2);
+  });
+
+  it("leaves restored-journal recovery progress unchanged for an unrelated signer", async () => {
+    const w = world(), archive = join(w.dir, "backup.enc"); await w.journal().backupTo(archive);
+    const restored = w.journal(SubmissionJournal.restoreBackup(archive, join(w.dir, "restored"), w.key, w.scope));
+    const manager = w.manager(restored), pocket = identityFor(w.v).pocket, fresh = Keypair.generate();
+    await manager.prepareRecovery(pocket, { sessionKind: 0, sessionKeyHex: fresh.publicKey.toBuffer().toString("hex") + "00" });
+    const before = { recovery: restored.recoverySlot(pocket), floor: restored.authorizationSlot(pocket) };
+    const attacker = Keypair.generate(), intent = { ...w.v.intent, nonce: 9n }, hash = intentHash(intent);
+    w.finalizedBank(150);
+    await expect(manager.submit({ intent, hash, sessionKind: 0, sessionKey: attacker.publicKey.toBytes(),
+      signature: ed25519.sign(hash, attacker.secretKey.subarray(0, 32)) }, w.prepare)).rejects.toThrow(/fresh owner session|authorized/);
+    expect({ recovery: restored.recoverySlot(pocket), floor: restored.authorizationSlot(pocket) }).toEqual(before);
+    expect(w.prepare).not.toHaveBeenCalled();
+  });
+
   it("does not create claims for unauthorized, revoked, used-nonce or wrong-network sessions", async () => {
     const w = world(), journal = w.journal(), m = w.manager(journal);
     await expect(m.submit({ ...w.v, sessionKey: randomBytes(32) }, w.prepare)).rejects.toThrow(/authorized/);
