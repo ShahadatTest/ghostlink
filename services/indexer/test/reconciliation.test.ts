@@ -168,7 +168,7 @@ it.each([127, 128])("reports usable roots only while the served bucket survives 
   server.listen(0, "127.0.0.1"); await once(server, "listening");
   try { expect((await fetch(`http://127.0.0.1:${(server.address() as { port: number }).port}/ready`)).status).toBe(later < 128 ? 200 : 503); }
   finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
-});
+}, 30_000); // rebuilds two trees across 128 buckets: over 5 s on a busy CI runner
 
 it.each(["root", "missing"] as const)("refuses a confirmed ring that contradicts the served bucket (%s)", async tamper => {
   const w = servedWorld(3, tamper);
