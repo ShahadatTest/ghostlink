@@ -4,8 +4,11 @@
 //! - roots are kept one per 150-slot bucket, so any number of appends
 //!   inside a bucket cannot push an earlier bucket's root out of the ring,
 //!   and the committed fixture proof still opens a pocket after the spam;
+//! - every snapshot pays the configured fee into the fee vault, which only
+//!   the program's upgrade authority can change or withdraw;
 //! - a snapshot runs only at the top level of a transaction that holds
-//!   nothing but compute-budget and snapshot instructions.
+//!   nothing but compute-budget and snapshot instructions;
+//! - a full tree is still refused, without charging the fee.
 
 #[allow(dead_code)]
 mod common;
@@ -21,6 +24,7 @@ const UNIX_T: i64 = 1_800_000_000;
 /// The committed fixture proof binds a census snapshot taken at this slot.
 const SNAPSHOT_SLOT: u64 = 123_456_789;
 const EXPIRY_SLOT: u64 = 123_500_000;
+const BPF_LOADER_UPGRADEABLE: &str = "BPFLoaderUpgradeab1e11111111111111111111111";
 
 fn set_clock(h: &mut Harness, slot: u64) {
     h.svm.set_sysvar::<Clock>(&Clock {
@@ -75,6 +79,10 @@ impl Ring {
     }
 }
 
+fn lamports(h: &Harness, address: &Pubkey) -> u64 {
+    h.svm.get_account(address).map(|a| a.lamports).unwrap_or(0)
+}
+
 fn initialize_census(h: &mut Harness) {
     let ix = census_initialize_ix(&h.payer.pubkey());
     h.send(&[ix], &[]).expect("initialize census");
@@ -112,6 +120,67 @@ fn system_transfer(from: &Pubkey, to: &Pubkey, lamports: u64) -> Instruction {
         accounts: vec![AccountMeta::new(*from, true), AccountMeta::new(*to, false)],
         data,
     }
+}
+
+fn program_data_pda() -> Pubkey {
+    pda(&[pk(CENSUS_ID).as_ref()], &pk(BPF_LOADER_UPGRADEABLE))
+}
+
+/// Rewrites the census ProgramData's upgrade authority. LiteSVM deploys
+/// programs with none, the shape of an immutable deployment.
+fn set_upgrade_authority(h: &mut Harness, authority: Option<&Pubkey>) {
+    let address = program_data_pda();
+    let mut account = h.svm.get_account(&address).expect("census program data");
+    // bincode UpgradeableLoaderState::ProgramData: tag u32 = 3 | slot u64 |
+    // Option<Pubkey> tag u8 | authority [32].
+    assert_eq!(&account.data[0..4], &3u32.to_le_bytes());
+    match authority {
+        Some(key) => {
+            account.data[12] = 1;
+            account.data[13..45].copy_from_slice(key.as_ref());
+        }
+        None => {
+            account.data[12] = 0;
+            account.data[13..45].fill(0);
+        }
+    }
+    h.svm.set_account(address, account).unwrap();
+}
+
+fn set_fee_ix(authority: &Pubkey, fee_lamports: u64) -> Instruction {
+    Instruction {
+        program_id: pk(CENSUS_ID),
+        accounts: vec![
+            AccountMeta::new_readonly(*authority, true),
+            meta_r(program_data_pda()),
+            meta_w(census_config_pda()),
+        ],
+        data: ix_data("set_fee", &fee_lamports),
+    }
+}
+
+fn withdraw_fees_ix(authority: &Pubkey, recipient: &Pubkey, lamports: u64) -> Instruction {
+    Instruction {
+        program_id: pk(CENSUS_ID),
+        accounts: vec![
+            AccountMeta::new_readonly(*authority, true),
+            meta_r(program_data_pda()),
+            meta_w(census_fee_vault_pda()),
+            meta_w(*recipient),
+        ],
+        data: ix_data("withdraw_fees", &lamports),
+    }
+}
+
+fn config_fee(h: &Harness) -> u64 {
+    let data = h.account_data(&census_config_pda()).expect("census config");
+    u64::from_le_bytes(data[8..16].try_into().unwrap())
+}
+
+fn funded_keypair(h: &mut Harness) -> Keypair {
+    let kp = Keypair::new();
+    h.svm.airdrop(&kp.pubkey(), 10_000_000_000).unwrap();
+    kp
 }
 
 fn assert_custom(err: &str, code: u32, name: &str) {
@@ -347,11 +416,78 @@ fn fixture_proof_survives_snapshot_spam() {
 }
 
 #[test]
+fn snapshot_fee_is_charged_and_only_the_upgrade_authority_moves_it() {
+    let mut h = Harness::new();
+    set_clock(&mut h, bucket_start(9_000));
+    initialize_census(&mut h);
+    let vault = census_fee_vault_pda();
+    let floor = lamports(&h, &vault);
+    assert_eq!(floor, h.svm.minimum_balance_for_rent_exemption(8 + 1), "vault starts rent-exempt and empty");
+    assert_eq!(config_fee(&h), DEFAULT_SNAPSHOT_FEE);
+
+    // A snapshot moves exactly the fee from the payer to the vault.
+    let payer = h.payer.pubkey();
+    let before = lamports(&h, &payer);
+    snapshot_native(&mut h, &Pubkey::new_unique()).expect("snapshot");
+    assert_eq!(lamports(&h, &vault), floor + DEFAULT_SNAPSHOT_FEE);
+    assert_eq!(before - lamports(&h, &payer), DEFAULT_SNAPSHOT_FEE + 5_000, "fee plus one signature");
+
+    // The payer's maximum binds.
+    let target = Pubkey::new_unique();
+    let low = census_snapshot_ix_with_max_fee(&payer, &target, &target, DEFAULT_SNAPSHOT_FEE - 1);
+    assert_custom(&h.send_expect_err(&[low], &[]), 6006, "FeeAboveMaximum");
+
+    // LiteSVM deploys without an upgrade authority: nobody may set the fee.
+    let authority = funded_keypair(&mut h);
+    let stranger = funded_keypair(&mut h);
+    let err = h.send_expect_err(&[set_fee_ix(&authority.pubkey(), 250_000)], &[&authority]);
+    assert_custom(&err, 6007, "NotAuthority");
+
+    set_upgrade_authority(&mut h, Some(&authority.pubkey()));
+    let err = h.send_expect_err(&[set_fee_ix(&stranger.pubkey(), 1)], &[&stranger]);
+    assert_custom(&err, 6007, "NotAuthority");
+    h.send(&[set_fee_ix(&authority.pubkey(), 250_000)], &[&authority]).expect("authority sets the fee");
+    assert_eq!(config_fee(&h), 250_000);
+
+    let target = Pubkey::new_unique();
+    let stale = census_snapshot_ix_with_max_fee(&payer, &target, &target, DEFAULT_SNAPSHOT_FEE);
+    assert_custom(&h.send_expect_err(&[stale], &[]), 6006, "FeeAboveMaximum");
+    let ok = census_snapshot_ix_with_max_fee(&payer, &target, &target, 250_000);
+    h.send(&[ok], &[]).expect("snapshot at the new fee");
+    let collected = DEFAULT_SNAPSHOT_FEE + 250_000;
+    assert_eq!(lamports(&h, &vault), floor + collected);
+
+    // Withdrawal: only the authority, never below the rent floor.
+    let err = h.send_expect_err(&[withdraw_fees_ix(&stranger.pubkey(), &stranger.pubkey(), 1)], &[&stranger]);
+    assert_custom(&err, 6007, "NotAuthority");
+    let err = h.send_expect_err(
+        &[withdraw_fees_ix(&authority.pubkey(), &authority.pubkey(), collected + 1)],
+        &[&authority],
+    );
+    assert_custom(&err, 6008, "InsufficientFees");
+    let had = lamports(&h, &authority.pubkey());
+    h.send(&[withdraw_fees_ix(&authority.pubkey(), &authority.pubkey(), collected)], &[&authority])
+        .expect("authority withdraws the fees");
+    assert_eq!(lamports(&h, &authority.pubkey()), had + collected);
+    assert_eq!(lamports(&h, &vault), floor);
+
+    // A zero fee charges nothing; removing the authority freezes the fee.
+    h.send(&[set_fee_ix(&authority.pubkey(), 0)], &[&authority]).expect("fee off");
+    snapshot_native(&mut h, &Pubkey::new_unique()).expect("free snapshot");
+    assert_eq!(lamports(&h, &vault), floor);
+    set_upgrade_authority(&mut h, None);
+    let err = h.send_expect_err(&[set_fee_ix(&authority.pubkey(), 1)], &[&authority]);
+    assert_custom(&err, 6007, "NotAuthority");
+}
+
+#[test]
 fn snapshot_refuses_cpi_and_any_instruction_that_could_lend_a_balance() {
     let mut h = Harness::new();
     set_clock(&mut h, bucket_start(11_000));
     initialize_census(&mut h);
     let tree = census_tree_pda();
+    let vault = census_fee_vault_pda();
+    let floor = lamports(&h, &vault);
     let payer = h.payer.pubkey();
     let wallet = Pubkey::new_unique();
 
@@ -367,11 +503,39 @@ fn snapshot_refuses_cpi_and_any_instruction_that_could_lend_a_balance() {
     // ...and so is anything after the snapshot.
     let err = h.send_expect_err(&[snap.clone(), lend], &[]);
     assert_custom(&err, 6005, "ForeignInstruction");
-    assert_eq!(Ring::read(&h, &tree).next_index, 0, "nothing was recorded");
+    // A census instruction other than snapshot does not qualify either.
+    let authority = funded_keypair(&mut h);
+    set_upgrade_authority(&mut h, Some(&authority.pubkey()));
+    let err = h.send_expect_err(&[set_fee_ix(&authority.pubkey(), 0), snap.clone()], &[&authority]);
+    assert_custom(&err, 6005, "ForeignInstruction");
+
+    let ring = Ring::read(&h, &tree);
+    assert_eq!(ring.next_index, 0, "nothing was recorded");
+    assert_eq!(lamports(&h, &vault), floor, "nothing was charged");
 
     // Compute-budget instructions and several snapshots may share one.
     let other = Pubkey::new_unique();
     h.send(&[compute_budget(600_000), snap, census_snapshot_ix(&payer, &other, &other)], &[])
         .expect("compute budget plus snapshots");
     assert_eq!(Ring::read(&h, &tree).next_index, 2);
+}
+
+#[test]
+fn full_tree_is_refused_without_charging_the_fee() {
+    let mut h = Harness::new();
+    set_clock(&mut h, bucket_start(13_000));
+    initialize_census(&mut h);
+    let tree = census_tree_pda();
+    let vault = census_fee_vault_pda();
+    let floor = lamports(&h, &vault);
+
+    let mut account = h.svm.get_account(&tree).unwrap();
+    account.data[8..16].copy_from_slice(&(1u64 << 26).to_le_bytes());
+    h.svm.set_account(tree, account).unwrap();
+    let before = h.account_data(&tree).unwrap();
+
+    let err = snapshot_native(&mut h, &Pubkey::new_unique()).unwrap_err();
+    assert_custom(&err, 6003, "TreeFull");
+    assert_eq!(h.account_data(&tree).unwrap(), before, "tree unchanged");
+    assert_eq!(lamports(&h, &vault), floor, "fee not charged");
 }
