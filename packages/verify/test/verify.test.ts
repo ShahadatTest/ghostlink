@@ -1,22 +1,21 @@
 /** Verifies the committed fixture proof through the public API. */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { bundledLoginVerificationKey, verifyLogin } from "../src/index.js";
-import { conservativePolicy, developmentSessionDeployment, hexToBytes } from "@ghostlink/common";
+import { bundledLoginVerificationKey, loginChallengeDigest, verifyLogin, verifyLoginChallenge } from "../src/index.js";
+import { bytesToHex, conservativePolicy, developmentSessionDeployment, hexToBytes } from "@ghostlink/common";
 import { ed25519 } from "@noble/curves/ed25519";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 const vkPath = join(root, "circuits/keys/login_vk.json");
 const proofPath = join(root, "circuits/keys/login_offchain_proof.json");
 const built = existsSync(vkPath) && existsSync(proofPath);
+const vectors = JSON.parse(readFileSync(join(root, "packages/common/fixtures/vectors.json"), "utf8"));
 
 describe.skipIf(!built)("verifyLogin", () => {
   const fx = () => JSON.parse(readFileSync(proofPath, "utf8"));
-  const vectors = JSON.parse(
-    readFileSync(join(root, "packages/common/fixtures/vectors.json"), "utf8"),
-  );
   const pub = vectors.circuits.login.public;
   const roots = async () => ({
     registry: [pub.registry_root],
@@ -73,6 +72,53 @@ describe.skipIf(!built)("verifyLogin", () => {
     expect(res.reason).toBeUndefined();
     expect(res.ok).toBe(true);
     expect(res.appId).toBe(vectors.identity.appId);
+  });
+
+  it("refuses a holdings gate without a freshness bound, and enforces the bound it is given", async () => {
+    // The census only grows: with no bound, this snapshot would pass forever.
+    const holdsAtLeast = { mintHi: pub.mint_hi, mintLo: pub.mint_lo, threshold: 100_000_000n };
+    expect(await verifyLogin({ ...base(), expect: { holdsAtLeast } })).toEqual({
+      ok: false, reason: "holdings claim needs a freshness bound: set expect.minSlot (0n accepts snapshots of any age)",
+    });
+    // 0n is the deliberate "any age" opt-out.
+    expect(await verifyLogin({ ...base(), expect: { holdsAtLeast, minSlot: 0n } })).toMatchObject({ ok: true });
+    expect(await verifyLogin({ ...base(), expect: { holdsAtLeast, minSlot: BigInt(pub.min_slot) } })).toMatchObject({ ok: true });
+    expect(await verifyLogin({ ...base(), expect: { holdsAtLeast, minSlot: BigInt(pub.min_slot) + 1n } }))
+      .toEqual({ ok: false, reason: "snapshot window too old" });
+    // A gate the server did not ask for needs no bound: plain login is unaffected.
+    expect(await verifyLogin(base())).toMatchObject({ ok: true });
+  });
+
+  it("blames server configuration, not the proof, when the verifying key cannot be loaded", async () => {
+    // As if a bundler or serverless build had dropped keys/login_vk.json.
+    vi.doMock("node:module", () => ({
+      createRequire: () => () => { throw new Error("Cannot find module '../keys/login_vk.json'"); },
+    }));
+    vi.resetModules();
+    try {
+      const fresh = await import("../src/index.js");
+      expect(() => fresh.bundledLoginVerificationKey()).toThrow(/login_vk/);
+      for (const verificationKey of [undefined, "keys/login_vk.json" as never]) {
+        const res = await fresh.verifyLogin({ ...base(), verificationKey });
+        expect(res.ok).toBe(false);
+        expect(res.reason).toMatch(/^login verifying key unavailable \(server configuration\)/);
+      }
+      // Passing the key explicitly is the fix for such deployments.
+      const verificationKey = JSON.parse(readFileSync(vkPath, "utf8"));
+      expect(await fresh.verifyLogin({ ...base(), verificationKey })).toMatchObject({ ok: true });
+    } finally {
+      vi.doUnmock("node:module");
+      vi.resetModules();
+    }
+  });
+
+  it("verifies the session-signed challenge for the key the proof is bound to", async () => {
+    const nonce = new Uint8Array(32).fill(19);
+    // softwareSession(seed).sign(digest) in the SDK is exactly ed25519.sign(digest, seed).
+    const signature = ed25519.sign(loginChallengeDigest(nonce), hexToBytes(vectors.identity.sessionSeed));
+    const session = { key32: sessionKey32, expirySlot, currentSlot: expirySlot - 10n };
+    expect(await verifyLogin({ ...base(), expect: { session } })).toMatchObject({ ok: true });
+    expect(verifyLoginChallenge({ key32: session.key32, nonce, signature })).toBe(true);
   });
 
   it("rejects the proof for another domain", async () => {
@@ -157,5 +203,53 @@ describe.skipIf(!built)("verifyLogin", () => {
       ...base(), expect: { session: { key32: sessionKey32, expirySlot: expirySlot + fieldPrime, currentSlot: expirySlot + fieldPrime - 1n } },
     });
     expect(result).toMatchObject({ ok: false, reason: "session slots must be u64 bigints" });
+  });
+});
+
+describe("verifyLoginChallenge", () => {
+  const seed = hexToBytes(vectors.identity.sessionSeed);
+  const key32 = ed25519.getPublicKey(seed);
+  const nonce = new Uint8Array(32).fill(19);
+  // What the SDK's softwareSession(seed).sign(loginChallengeDigest(nonce)) returns.
+  const signature = ed25519.sign(loginChallengeDigest(nonce), seed);
+
+  it("accepts the session key's signature over the documented digest", () => {
+    // The wire format other clients must reproduce, computed independently.
+    const digest = createHash("sha256").update("ghostlink:login-challenge:v1").update(nonce).digest();
+    expect(bytesToHex(loginChallengeDigest(nonce))).toBe(digest.toString("hex"));
+    expect(bytesToHex(key32)).toBe(vectors.identity.sessionPubkey);
+    expect(verifyLoginChallenge({ key32, nonce, signature })).toBe(true);
+    expect(verifyLoginChallenge({ key32: Buffer.from(key32), nonce: Buffer.from(nonce), signature: Buffer.from(signature) })).toBe(true);
+  });
+
+  it("rejects another nonce, another key, another message and wrong sizes", () => {
+    expect(verifyLoginChallenge({ key32, nonce: new Uint8Array(32).fill(20), signature })).toBe(false);
+    expect(verifyLoginChallenge({ key32: ed25519.getPublicKey(new Uint8Array(32).fill(9)), nonce, signature })).toBe(false);
+    // A signature over the bare nonce (an intent-style digest) is not a login.
+    expect(verifyLoginChallenge({ key32, nonce, signature: ed25519.sign(nonce, seed) })).toBe(false);
+    expect(verifyLoginChallenge({ key32, nonce, signature: signature.subarray(0, 63) })).toBe(false);
+    expect(verifyLoginChallenge({ key32, nonce, signature: new Uint8Array([...signature, 0]) })).toBe(false);
+    expect(verifyLoginChallenge({ key32: key32.subarray(0, 31), nonce, signature })).toBe(false);
+    expect(verifyLoginChallenge({ key32, nonce: nonce.subarray(0, 16), signature })).toBe(false);
+  });
+
+  it("refuses small-order keys, for which anyone can sign anything", () => {
+    const identityPoint = new Uint8Array(32);
+    identityPoint[0] = 1;
+    const forged = new Uint8Array(64); // R = identity, S = 0
+    forged[0] = 1;
+    // Permissive (ZIP-215) verification accepts this forgery for any message.
+    expect(ed25519.verify(forged, loginChallengeDigest(nonce), identityPoint)).toBe(true);
+    expect(verifyLoginChallenge({ key32: identityPoint, nonce, signature: forged })).toBe(false);
+  });
+
+  it("returns false for malformed input instead of throwing", () => {
+    for (const input of [
+      null, undefined, {}, "challenge", { key32: bytesToHex(key32), nonce, signature },
+      { key32: Array.from(key32), nonce, signature }, { key32, nonce, signature: Array.from(signature) },
+      { key32: new Uint8Array(32).fill(255), nonce, signature },
+    ]) {
+      expect(verifyLoginChallenge(input as never)).toBe(false);
+    }
   });
 });

@@ -1,5 +1,5 @@
 /**
- * Server-side login verification (build plan 4.2 step 7, off-chain path).
+ * Server-side login verification: the off-chain path, no transaction.
  *
  * In plain language: an app's backend calls `verifyLogin` with the proof
  * its frontend received. The function checks the zero-knowledge proof
@@ -8,8 +8,9 @@
  * real recent roots, and — if you tell it which session key and expiry
  * the client announced — that the proof is bound to exactly those and
  * dies with its expiry. Session details are public: the backend must ALSO
- * verify a fresh, single-use challenge signed by that session key before
- * granting access. Binding alone does not prevent captured-proof replay.
+ * verify a fresh, single-use challenge signed by that session key
+ * (`verifyLoginChallenge`) before granting access. Binding alone does not
+ * prevent captured-proof replay.
  *
  * A proof is not a password: without `expect.session` any copy of it
  * logs in until its roots fall out of the ring. Set it, and have the
@@ -18,10 +19,12 @@
 import * as snarkjs from "snarkjs";
 export { loginChallengeDigest } from "@ghostlink/common";
 import { createRequire } from "node:module";
+import { ed25519 } from "@noble/curves/ed25519";
 import {
   FIELD_PRIME,
   domainHash,
   homeHash,
+  loginChallengeDigest,
   pocketAuthorizationContext,
   sessionCommitment,
   type RootsResponse,
@@ -76,8 +79,9 @@ export interface VerifyLoginParams {
   expectedDomain: string;
   /**
    * The login verifying key. Defaults to the key bundled with this
-   * package (`bundledLoginVerificationKey()`); pass your own only when
-   * you verify against a different circuit build on purpose.
+   * package (`bundledLoginVerificationKey()`); pass your own when you
+   * verify against a different circuit build on purpose, or when your
+   * bundler cannot ship `keys/login_vk.json` next to the code.
    */
   verificationKey?: object;
   /**
@@ -91,8 +95,16 @@ export interface VerifyLoginParams {
   /** Skip the root check. Only for tests; never in production. */
   allowUnverifiedRoots?: boolean;
   expect?: {
+    /** Token gate: at least `threshold` of this mint. Requires `minSlot`. */
     holdsAtLeast?: { mintHi: string; mintLo: string; threshold: bigint };
-    /** Oldest acceptable census snapshot; only meaningful with `holdsAtLeast`. */
+    /**
+     * Oldest census snapshot slot you accept: `currentSlot` from your own
+     * RPC minus a window a little wider than the clients' `maxAgeSlots`
+     * (they subtract it from a slot read before proving). Required with
+     * `holdsAtLeast`: the census tree only grows and the prover picks
+     * `min_slot`, so without a bound a snapshot of a past peak or briefly
+     * borrowed balance passes forever. `0n` deliberately accepts any age.
+     */
     minSlot?: bigint;
     /** Binds the proof to one session key + expiry and enforces the expiry. */
     session?: SessionExpectation;
@@ -158,6 +170,12 @@ async function verifyLoginChecked(params: VerifyLoginParams): Promise<VerifyLogi
   if (want) {
     if (typeof want.threshold !== "bigint" || want.threshold < 0n || want.threshold > MAX_U64) {
       return { ok: false, reason: "expected threshold must be a u64 bigint" };
+    }
+    // Census leaves are never removed and the prover picks min_slot, so a
+    // gate with no freshness bound accepts a past peak or a briefly
+    // borrowed balance forever. 0n is the explicit way to accept any age.
+    if (params.expect?.minSlot === undefined) {
+      return { ok: false, reason: "holdings claim needs a freshness bound: set expect.minSlot (0n accepts snapshots of any age)" };
     }
     if (signals.claim_holdings !== 1n) return { ok: false, reason: "holdings claim missing" };
     const hi = parseField(want.mintHi);
@@ -243,14 +261,23 @@ async function verifyLoginChecked(params: VerifyLoginParams): Promise<VerifyLogi
     }
   }
 
-  // 5. The proof itself.
+  // 5. The proof itself. A missing key is the server's fault, not the
+  // proof's: bundlers and serverless builds can drop keys/login_vk.json.
+  let vk: unknown;
+  try {
+    vk = params.verificationKey ?? bundledLoginVerificationKey();
+  } catch {
+    vk = undefined;
+  }
+  if (typeof vk !== "object" || vk === null) {
+    return {
+      ok: false,
+      reason: "login verifying key unavailable (server configuration): deploy keys/login_vk.json with @ghostlink/verify or pass verificationKey",
+    };
+  }
   let valid = false;
   try {
-    valid = await snarkjs.groth16.verify(
-      params.verificationKey ?? bundledLoginVerificationKey(),
-      params.publicSignals,
-      params.proof,
-    );
+    valid = await snarkjs.groth16.verify(vk, params.publicSignals, params.proof);
   } catch {
     return { ok: false, reason: "proof is malformed" };
   }
@@ -259,9 +286,51 @@ async function verifyLoginChecked(params: VerifyLoginParams): Promise<VerifyLogi
   return { ok: true, appId: signals.app_id.toString() };
 }
 
+export interface LoginChallengeSignature {
+  /** The proof-bound Ed25519 session key: the `expect.session.key32` you verified. */
+  key32: Uint8Array;
+  /** The 32-byte single-use nonce your server issued for this login. */
+  nonce: Uint8Array;
+  /** The client's 64-byte Ed25519 signature over `loginChallengeDigest(nonce)`. */
+  signature: Uint8Array;
+}
+
+/**
+ * Replay control: true when the session key signed `loginChallengeDigest(nonce)`,
+ * exactly as the SDK's software (Ed25519) session signs it in `ghostlink:signIn`.
+ * Pass the same key32 you bound with `verifyLogin`'s `expect.session`, and
+ * consume the nonce atomically: a signature cannot tell a first use from a
+ * replay. Malformed input returns false; this never throws.
+ *
+ * Ed25519 sessions only. A passkey (P-256) session's key32 is a hash of its
+ * public key and its signature is a WebAuthn assertion, so this returns false
+ * for it: verify those with a WebAuthn library against the 33-byte key (whose
+ * SHA-256 must equal key32), expecting the challenge `loginChallengeDigest(nonce)`.
+ */
+export function verifyLoginChallenge(input: LoginChallengeSignature): boolean {
+  try {
+    const { key32, nonce, signature } = input;
+    if (!(key32 instanceof Uint8Array) || key32.length !== 32) return false;
+    if (!(nonce instanceof Uint8Array) || nonce.length !== 32) return false;
+    if (!(signature instanceof Uint8Array) || signature.length !== 64) return false;
+    // Anyone can sign for a small-order key; the SDK refuses such session
+    // keys (and mixed-order ones), so a backend must as well.
+    const point = ed25519.ExtendedPoint.fromHex(key32);
+    if (point.isSmallOrder() || !point.isTorsionFree()) return false;
+    // RFC 8032 encoding rules rather than ZIP-215; honest signatures pass both.
+    return ed25519.verify(signature, loginChallengeDigest(nonce), key32, { zip215: false });
+  } catch {
+    return false;
+  }
+}
+
 let bundledKey: object | undefined;
 
-/** The login verifying key shipped with this package (keys/login_vk.json). */
+/**
+ * The login verifying key shipped with this package (keys/login_vk.json).
+ * Throws if a bundler or deployment left the file out; call it at startup
+ * to fail fast instead of on the first login.
+ */
 export function bundledLoginVerificationKey(): object {
   if (!bundledKey) {
     const require = createRequire(import.meta.url);
