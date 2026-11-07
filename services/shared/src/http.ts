@@ -273,13 +273,16 @@ export class RateLimiter {
 /**
  * The caller's address for rate limiting. Only honours X-Forwarded-For
  * when the deployment says a trusted proxy sets it; otherwise anyone
- * could pick their own bucket.
+ * could pick their own bucket. Uses the rightmost entry: the one the
+ * trusted proxy wrote. Earlier entries are client-supplied whenever the
+ * proxy appends instead of overwriting, so they cannot choose a bucket.
  */
 export function clientIp(req: IncomingMessage, trustProxy = false): string {
   if (trustProxy) {
     const xff = req.headers["x-forwarded-for"];
-    const first = (Array.isArray(xff) ? xff[0] : xff)?.split(",")[0]?.trim();
-    if (first) return first;
+    const header = Array.isArray(xff) ? xff.join(",") : xff;
+    const last = header?.split(",").at(-1)?.trim();
+    if (last) return last;
   }
   return req.socket.remoteAddress ?? "unknown";
 }

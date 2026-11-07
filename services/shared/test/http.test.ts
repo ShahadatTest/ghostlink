@@ -2,7 +2,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { once } from "node:events";
 import { request } from "node:http";
-import { HttpError, RateLimiter, Router, Semaphore, badRequest } from "../src/index.js";
+import { HttpError, RateLimiter, Router, Semaphore, badRequest, clientIp } from "../src/index.js";
+import type { IncomingMessage } from "node:http";
 
 async function withRouter<T>(router: Router, fn: (base: string) => Promise<T>): Promise<T> {
   const server = router.server();
@@ -197,5 +198,25 @@ describe("rate limiter and semaphore", () => {
     release();
     await Promise.all([second, third]);
     expect(peak).toBe(1);
+  });
+});
+
+describe("clientIp", () => {
+  const req = (xff: string | string[] | undefined, remoteAddress = "10.0.0.9") =>
+    ({ headers: xff === undefined ? {} : { "x-forwarded-for": xff }, socket: { remoteAddress } }) as unknown as IncomingMessage;
+
+  it("ignores X-Forwarded-For unless a trusted proxy is configured", () => {
+    expect(clientIp(req("203.0.113.7"))).toBe("10.0.0.9");
+  });
+
+  it("uses the entry the trusted proxy appended, not a client-chosen one", () => {
+    expect(clientIp(req("203.0.113.7"), true)).toBe("203.0.113.7");
+    // A proxy that appends keeps whatever the client sent in front of the real address.
+    expect(clientIp(req("1.1.1.1, 2.2.2.2, 203.0.113.7"), true)).toBe("203.0.113.7");
+    expect(clientIp(req(["1.1.1.1", "203.0.113.7"]), true)).toBe("203.0.113.7");
+  });
+
+  it("falls back to the socket address when the header is empty", () => {
+    expect(clientIp(req(" "), true)).toBe("10.0.0.9");
   });
 });
