@@ -1,7 +1,7 @@
 // Pack only public libraries and test them in a consumer outside the monorepo.
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,19 +14,27 @@ if (!pnpm || !/pnpm/i.test(pnpm)) throw new Error("Run through pnpm: pnpm pack:s
 const run = (args, cwd = root) => execFileSync(process.execPath, [pnpm, ...args], { cwd, stdio: "inherit" });
 mkdirSync(destination, { recursive: true });
 const includeBot = process.argv.includes("--bot");
-const folders = ["packages/common", "packages/sdk", ...(includeBot ? ["services/shared", "packages/bot"] : [])];
+const folders = ["packages/common", "packages/sdk", "packages/verify", "packages/prover-wasm", "packages/react",
+  ...(includeBot ? ["services/shared", "packages/bot"] : [])];
+// Files a consumer cannot work without, beyond each package's dist entry point.
+const required = { "@ghostlink/verify": ["package/keys/login_vk.json"] };
 const tarballs = [], packageOverrides = {};
 for (const relative of folders) {
   const folder = join(root, relative);
   const pkg = JSON.parse(readFileSync(join(folder, "package.json"), "utf8"));
+  // Packing never builds: an unbuilt package would ship without its code.
+  if (!existsSync(join(folder, pkg.main))) throw new Error(`${pkg.name} is not built: run pnpm --filter ${pkg.name} build`);
   run(["pack", "--pack-destination", destination], folder);
   const tarball = join(destination, `${pkg.name.replace(/^@/, "").replace("/", "-")}-${pkg.version}.tgz`);
   // pnpm's allowlisted package contents must not accidentally ship workspace files.
   const files = execFileSync("tar", ["-tzf", tarball], { encoding: "utf8" }).trim().split(/\r?\n/);
   for (const file of files) {
-    if (!/^package\/(dist\/[^\s]+\.(?:js|d\.ts)|fixtures\/[^\s]+\.json|package\.json|README\.md|LICENSE)$/.test(file)) {
+    if (!/^package\/(dist\/[^\s]+\.(?:js|d\.ts)|fixtures\/[^\s]+\.json|keys\/login_vk\.json|package\.json|README\.md|LICENSE)$/.test(file)) {
       throw new Error(`Unexpected packed file: ${file}`);
     }
+  }
+  for (const file of ["package/package.json", "package/README.md", "package/LICENSE", "package/dist/index.js", "package/dist/index.d.ts", ...(required[pkg.name] ?? [])]) {
+    if (!files.includes(file)) throw new Error(`${pkg.name} archive is missing ${file}`);
   }
   tarballs.push(tarball);
   packageOverrides[pkg.name] = `file:${tarball.replaceAll("\\", "/")}`;
@@ -41,7 +49,10 @@ if (process.argv.includes("--test")) {
     name: "ghostlink-install-check", private: true, type: "module",
     pnpm: { overrides: { ...JSON.parse(readFileSync(join(root, "package.json"), "utf8")).pnpm.overrides, ...packageOverrides } },
   }));
-  run(["add", "--ignore-scripts", ...tarballs], consumer);
+  // A React app supplies react (a peer dependency) and its types: use the versions the workspace tests.
+  const reactWorkspace = createRequire(join(root, "packages", "react", "package.json"));
+  const reactDeps = ["react", "@types/react"].map(name => `${name}@${reactWorkspace(`${name}/package.json`).version}`);
+  run(["add", "--ignore-scripts", ...tarballs, ...reactDeps], consumer);
   writeFileSync(join(consumer, "check.mjs"), `
 import assert from 'node:assert/strict';
 import { createPublicKey, verify } from 'node:crypto';
@@ -90,6 +101,49 @@ assert.throws(() => verifyTelegramPairingClaim(code, '12345', { initData: 'user=
 console.log('Installed SDK: ESM import, public delegation, real intent signature and exact funding validation verified. No network transaction sent.');
 `);
   execFileSync(process.execPath, [join(consumer, "check.mjs")], { cwd: consumer, stdio: "inherit" });
+  writeFileSync(join(consumer, "login.mjs"), `
+import assert from 'node:assert/strict';
+import { randomBytes } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { bundledLoginVerificationKey, loginChallengeDigest, verifyLogin, verifyLoginChallenge } from '@ghostlink/verify';
+import { createProver } from '@ghostlink/prover-wasm';
+import { ContinueWithGhostLink, GhostLinkProvider, useGhostLink } from '@ghostlink/react';
+import { softwareSession } from '@ghostlink/sdk';
+const require = createRequire(import.meta.url);
+const fixture = JSON.parse(readFileSync(${JSON.stringify(join(root, "circuits", "keys", "login_offchain_proof.json"))}, 'utf8'));
+const vectors = JSON.parse(readFileSync(${JSON.stringify(join(root, "packages", "common", "fixtures", "vectors.json"))}, 'utf8'));
+const pub = vectors.circuits.login.public;
+const session = softwareSession(Buffer.from(vectors.identity.sessionSeed, 'hex'));
+const expirySlot = BigInt(vectors.identity.expirySlot);
+const request = { proof: fixture.proof, publicSignals: fixture.publicSignals, expectedDomain: vectors.identity.origin,
+  roots: async () => ({ registry: [pub.registry_root], census: [pub.census_root] }),
+  expect: { holdsAtLeast: { mintHi: pub.mint_hi, mintLo: pub.mint_lo, threshold: BigInt(pub.threshold) }, minSlot: BigInt(pub.min_slot),
+    session: { key32: session.key32, expirySlot, currentSlot: expirySlot - 1n } } };
+// The archived verifying key loads from the installed package and verifies a real proof.
+assert.deepEqual(await verifyLogin(request), { ok: true, appId: vectors.identity.appId });
+assert.deepEqual(require('@ghostlink/verify/keys/login_vk.json'), bundledLoginVerificationKey());
+assert.throws(() => require('@ghostlink/verify/dist/index.js'), { code: 'ERR_PACKAGE_PATH_NOT_EXPORTED' });
+assert.match((await verifyLogin({ ...request, expect: { ...request.expect, minSlot: undefined } })).reason, /freshness bound/);
+// The installed SDK's session signature is what the installed verifier accepts.
+const nonce = randomBytes(32);
+const { signature } = await session.sign(loginChallengeDigest(nonce));
+assert.equal(verifyLoginChallenge({ key32: session.key32, nonce, signature }), true);
+assert.equal(verifyLoginChallenge({ key32: session.key32, nonce: randomBytes(32), signature }), false);
+let downloads = 0;
+const prover = createProver({
+  login: { wasmUrl: 'https://artifacts.invalid/login.wasm', zkeyUrl: 'https://artifacts.invalid/login.zkey', wasmSha256: '00'.repeat(32), zkeySha256: '00'.repeat(32) },
+  fetchFn: async () => { downloads++; return new Response(new Uint8Array([1, 2, 3])); },
+});
+await assert.rejects(prover.prove('owner', {}), /no owner circuit artifacts configured/);
+assert.equal(downloads, 0);
+await assert.rejects(prover.prove('login', {}), /integrity check failed/);
+for (const component of [GhostLinkProvider, useGhostLink, ContinueWithGhostLink]) assert.equal(typeof component, 'function');
+console.log('Installed verify, prover-wasm and react: real proof with the archived key, SDK challenge signature, login-only prover pins and React exports verified.');
+// snarkjs keeps its curve worker threads alive.
+process.exit(0);
+`);
+  execFileSync(process.execPath, [join(consumer, "login.mjs")], { cwd: consumer, stdio: "inherit" });
   if (includeBot) {
     writeFileSync(join(consumer, "bot.mjs"), `
 import assert from 'node:assert/strict';
@@ -139,6 +193,15 @@ const authorize = (client: GhostLink, params: SessionAuthorizationParams) => cli
 const key: SessionPublicKey = sessionPublicKey(0, new Uint8Array(32));
 const deposit = (bytes: Uint8Array, approval: FundingApproval): Uint8Array => prepareFundingTransaction(bytes, approval);
 void authorize; void key; void deposit;
+import { verifyLogin, verifyLoginChallenge, type VerifyLoginParams, type LoginChallengeSignature } from '@ghostlink/verify';
+import { createProver, type ProverConfig } from '@ghostlink/prover-wasm';
+import { useGhostLink, type GhostLinkContextValue, type GhostLinkLoginFlow } from '@ghostlink/react';
+const verified = (params: VerifyLoginParams, challenge: LoginChallengeSignature) => verifyLogin(params).then(r => r.ok && verifyLoginChallenge(challenge));
+// A login-only prover plugs straight into the SDK client.
+const loginOnly: ProverConfig = { login: { wasmUrl: '/login.wasm', zkeyUrl: '/login.zkey', wasmSha256: '00'.repeat(32), zkeySha256: '00'.repeat(32) } };
+const client = () => GhostLink.init({ cluster: 'localnet', indexer: 'http://127.0.0.1:8787', prover: createProver(loginOnly) });
+const signIn = (flow: GhostLinkLoginFlow) => { const context: GhostLinkContextValue = useGhostLink(); return context.ensureClient().then(() => context.login(flow)); };
+void verified; void client; void signIn;
 ${includeBot ? "import { BotOnboarding, type BotOnboardingOptions, type BotConsent, type BotIntentParams, type BotOrderStatus } from '@ghostlink/bot';\nconst initBot = (options: BotOnboardingOptions) => new BotOnboarding(options);\nconst prepare = (m: BotOnboarding, c: BotConsent, requestKey: string, params: BotIntentParams) => m.prepareIntent(c.id, c, { requestKey, params });\nconst status = (m: BotOnboarding, c: BotConsent, requestKey: string): BotOrderStatus => m.orderStatus(c.id, c, requestKey);\nvoid initBot; void prepare; void status;" : ""}
 `);
   const require = createRequire(join(root, "packages", "sdk", "package.json"));

@@ -2,23 +2,52 @@
   "name": "@ghostlink/react",
   "version": "0.1.0",
   "description": "React bindings for GhostLink: a provider, a useGhostLink hook and a drop-in ContinueWithGhostLink button.",
+  "keywords": [
+    "ghostlink",
+    "solana",
+    "react",
+    "react-hooks",
+    "zero-knowledge",
+    "login",
+    "authentication"
+  ],
+  "homepage": "https://github.com/Ghostlink-Labs/ghostlink/tree/main/packages/react#readme",
+  "bugs": {
+    "url": "https://github.com/Ghostlink-Labs/ghostlink/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Ghostlink-Labs/ghostlink.git",
+    "directory": "packages/react"
+  },
   "license": "Apache-2.0",
   "type": "module",
+  "sideEffects": false,
+  "engines": {
+    "node": ">=20"
+  },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
-    ".": "./dist/index.js"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
   },
   "files": [
     "dist"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "vitest run --passWithNoTests",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@ghostlink/common": "workspace:*",
     "@ghostlink/sdk": "workspace:*"
   },
   "peerDependencies": {

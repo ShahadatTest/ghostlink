@@ -14,7 +14,7 @@ pnpm pack:bot
 pnpm test:package:bot
 ```
 
-Copy the four archives and `SHA256SUMS` from `artifacts/sdk/`. These are local archives, not a published registry release. In a pnpm consumer, resolve the companion packages explicitly:
+Copy the `common`, `sdk`, `service-kit` and `bot` archives and `SHA256SUMS` from `artifacts/sdk/` (the directory also holds the optional `verify`, `prover-wasm` and `react` archives). These are local archives, not a published registry release. In a pnpm consumer, resolve the companion packages explicitly:
 
 ```json
 {

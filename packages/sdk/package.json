@@ -2,16 +2,48 @@
   "name": "@ghostlink/sdk",
   "version": "0.1.0",
   "description": "Experimental browser and Node.js SDK for GhostLink identity proofs, policy-controlled pockets and delegated bot sessions. Development networks only.",
+  "keywords": [
+    "ghostlink",
+    "solana",
+    "zero-knowledge",
+    "privacy",
+    "identity",
+    "login",
+    "session-keys",
+    "wallet-standard",
+    "trading-bot"
+  ],
+  "homepage": "https://github.com/Ghostlink-Labs/ghostlink/tree/main/packages/sdk#readme",
+  "bugs": {
+    "url": "https://github.com/Ghostlink-Labs/ghostlink/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Ghostlink-Labs/ghostlink.git",
+    "directory": "packages/sdk"
+  },
   "license": "Apache-2.0",
   "type": "module",
+  "sideEffects": false,
+  "engines": {
+    "node": ">=20"
+  },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
-    ".": "./dist/index.js"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
   },
   "files": [
     "dist"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "vitest run",

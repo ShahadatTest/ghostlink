@@ -2,13 +2,22 @@
   "name": "@ghostlink/bot",
   "version": "0.1.0",
   "description": "Localnet candidate for authenticated Telegram bot onboarding and encrypted delegated session storage.",
+  "keywords": ["ghostlink", "solana", "telegram", "telegram-bot", "trading-bot", "session-keys", "delegation"],
+  "homepage": "https://github.com/Ghostlink-Labs/ghostlink/tree/main/packages/bot#readme",
+  "bugs": { "url": "https://github.com/Ghostlink-Labs/ghostlink/issues" },
+  "repository": { "type": "git", "url": "git+https://github.com/Ghostlink-Labs/ghostlink.git", "directory": "packages/bot" },
   "license": "Apache-2.0",
   "type": "module",
+  "sideEffects": false,
   "engines": { "node": "^22.16.0 || ^24.0.0" },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "exports": { ".": "./dist/index.js" },
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js", "default": "./dist/index.js" },
+    "./package.json": "./package.json"
+  },
   "files": ["dist"],
+  "publishConfig": { "access": "public" },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
