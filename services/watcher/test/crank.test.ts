@@ -101,13 +101,40 @@ describe("durable funded watcher", () => {
     expect(w.chain.sendRawTransaction).toHaveBeenCalledTimes(2); expect(reopened.spent()).toBe(10_000);
   });
 
-  it("refuses replacement when expired signature history is missing and the proposal changed", async () => {
-    const w = setup(), j = w.open();
+  it("closes a moot attempt only after proven expiry, keeps its fee, and then cranks the replacing proposal", async () => {
+    const w = setup(), j = w.open(), pocket = w.pocket.toBase58();
     w.chain.sendRawTransaction.mockRejectedValue(new Error("lost"));
-    await expect(w.cranker(j).execute(w.pocket.toBase58())).rejects.toThrow();
-    w.expire(); w.after(200n);
-    await expect(w.cranker(j).execute(w.pocket.toBase58())).rejects.toThrow(/outcome unavailable/);
-    expect(w.chain.sendRawTransaction).toHaveBeenCalledOnce(); expect(j.spent()).toBe(5000);
+    await expect(w.cranker(j).execute(pocket)).rejects.toThrow();
+    const first = j.get(pocket)!;
+    w.after(200n); // Executed or cancelled by the owner, then replaced by a new proposal.
+    await w.cranker(j).execute(pocket); // Blockhash still valid: the old packet could land and keeps blocking.
+    expect(j.get(pocket)).toMatchObject({ state: "pending", proposal: first.proposal }); expect(j.outstanding()).toEqual([pocket]);
+    w.chain.isBlockhashValid.mockResolvedValueOnce({ context: { slot: 400 }, value: true });
+    w.expire();
+    await expect(w.cranker(j).execute(pocket)).rejects.toThrow(/conflicting/); // Contradictory expiry evidence still refuses.
+    expect(j.get(pocket)!.state).toBe("pending");
+    w.chain.sendRawTransaction.mockImplementation(async bytes => bs58.encode(Transaction.from(bytes).signature!));
+    await w.cranker(j).execute(pocket);
+    const next = j.get(pocket)!;
+    expect(next.proposal).not.toBe(first.proposal); expect(next).toMatchObject({ attempt: 1, state: "confirmed" });
+    expect(j.spent()).toBe(10_000); // The superseded attempt's fee is never refunded.
+    expect(w.chain.sendRawTransaction).toHaveBeenCalledTimes(2);
+    expect(new Set(w.chain.sendRawTransaction.mock.calls.map(call => Buffer.from(call[0]).toString("base64"))).size).toBe(2);
+  });
+
+  it("closes an attempt made moot by the owner as superseded without a send, refund or blocked admission", async () => {
+    const w = setup(), j = w.open(), pocket = w.pocket.toBase58();
+    w.chain.sendRawTransaction.mockRejectedValue(new Error("preflight: change already executed"));
+    await expect(w.cranker(j).execute(pocket)).rejects.toThrow();
+    const first = j.get(pocket)!;
+    w.pending(false); w.expire(); // No proposal remains and the status history is absent.
+    await w.cranker(j).execute(pocket);
+    expect(j.get(pocket)).toMatchObject({ state: "superseded", proposal: first.proposal, packet: first.packet, fee: 5000 });
+    expect(j.outstanding()).toEqual([]); expect(j.spent()).toBe(5000);
+    await w.cranker(j).execute(pocket);
+    expect(w.chain.sendRawTransaction).toHaveBeenCalledOnce(); expect(w.chain.getLatestBlockhashAndContext).toHaveBeenCalledOnce();
+    const watcher = w.watcher(j); await watcher.tick(); // The funded tick no longer revisits the closed attempt.
+    expect(j.get(pocket)!.state).toBe("superseded"); expect(w.chain.sendRawTransaction).toHaveBeenCalledOnce();
   });
 
   it("refuses wrong genesis/payer, stale RPC and invalid or excessive fees before sending", async () => {

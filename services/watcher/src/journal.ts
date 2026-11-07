@@ -9,10 +9,18 @@ export interface CrankPacket {
 }
 export interface CrankAttempt {
   pocket: string; proposal: string; packet: CrankPacket; fee: number; attempt: number;
-  state: "pending" | "confirmed" | "finalized" | "failed" | "expired";
+  /**
+   * `superseded`: no signature history, the blockhash provably expired and the finalized pocket no
+   * longer holds this proposal (executed by anyone, cancelled or replaced). The packet can never land;
+   * whether it did is unknown, so its fee stays counted. It must not block the pocket's next change.
+   */
+  state: "pending" | "confirmed" | "finalized" | "failed" | "expired" | "superseded";
   observedSlot: number;
 }
-const terminal = (a: CrankAttempt) => ["finalized", "failed", "expired"].includes(a.state);
+export const terminalCrankStates: readonly CrankAttempt["state"][] = ["finalized", "failed", "expired", "superseded"];
+/** States whose packet provably can no longer land, so a still-pending proposal may get a new packet. */
+const replaceable = (a: CrankAttempt) => a.state === "expired" || a.state === "superseded";
+const terminal = (a: CrankAttempt) => terminalCrankStates.includes(a.state);
 
 /** FULL SQLite commits bind the packet and cumulative fee reservation in one transaction. */
 export class CrankJournal {
@@ -112,7 +120,7 @@ export class CrankJournal {
     return this.#storage.transaction(() => {
       this.#assertIdentity(); this.spent();
       const prior = this.get(pocket);
-      if (prior && (!terminal(prior) || (prior.proposal === proposal && prior.state !== "expired"))) return prior;
+      if (prior && (!terminal(prior) || (prior.proposal === proposal && !replaceable(prior)))) return prior;
       const attempt = prior?.proposal === proposal ? prior.attempt + 1 : 1;
       if (attempt > this.maximumAttempts) throw new Error("crank attempt limit reached");
       if (prior && (packet.minContextSlot < prior.observedSlot || packet.signature === prior.packet.signature)) throw new Error("replacement crank packet is stale");

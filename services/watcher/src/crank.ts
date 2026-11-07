@@ -3,7 +3,7 @@ import { Connection, Keypair, PublicKey, Transaction } from "@solana/web3.js";
 import { policyHash } from "@ghostlink/common";
 import { executeChangeIx, pocketPda, POCKET, readPocketAccount } from "@ghostlink/service-kit";
 import bs58 from "bs58";
-import { CrankJournal, type CrankAttempt } from "./journal.js";
+import { CrankJournal, terminalCrankStates, type CrankAttempt } from "./journal.js";
 
 function context(slot: number, floor = 0): number {
   if (!Number.isSafeInteger(slot) || slot < floor) throw new Error("stale crank context");
@@ -48,7 +48,7 @@ export class DurableCranker {
     context(p.lastValidBlockHeight); context(p.minContextSlot);
   }
   async #reconcile(record: CrankAttempt): Promise<CrankAttempt> {
-    if (["finalized", "failed", "expired"].includes(record.state)) return record;
+    if (terminalCrankStates.includes(record.state)) return record;
     const p = record.packet;
     const response = await this.chain.getSignatureStatuses([p.signature], { searchTransactionHistory: true });
     const slot = context(response.context.slot, record.observedSlot);
@@ -66,10 +66,13 @@ export class DurableCranker {
     const valid = await this.chain.isBlockhashValid(p.blockhash, { commitment: "finalized", minContextSlot: slot });
     context(valid.context.slot, slot);
     if (valid.value !== false) throw new Error("conflicting crank expiry evidence");
+    // The packet can never land now. With the same finalized proposal it provably did not execute it
+    // (expired; replaceable). A changed or absent proposal (the owner executed or cancelled it first,
+    // or our execution's status history was pruned) leaves the outcome unknown: never invent a receipt,
+    // but close the moot attempt with its fee still counted, or it would block this pocket forever and
+    // fill every crank admission slot.
     const current = await this.#account(record.pocket, valid.context.slot, "finalized");
-    // A changed/missing proposal without signature history is ambiguous. Never invent a successful receipt.
-    if (current.proposal !== record.proposal) throw new Error("crank outcome unavailable");
-    return this.journal.observe(record.pocket, p.signature, "expired", current.slot);
+    return this.journal.observe(record.pocket, p.signature, current.proposal === record.proposal ? "expired" : "superseded", current.slot);
   }
   async execute(pocket: string): Promise<void> {
     if (this.#busy.has(pocket)) return;
@@ -78,14 +81,19 @@ export class DurableCranker {
       if (await this.chain.getGenesisHash() !== this.journal.scope.genesisHash) throw new Error("crank genesis mismatch");
       this.journal.checkWritable();
       let record = this.journal.get(pocket);
-      if (record) { this.#validate(record); record = await this.#reconcile(record); }
+      if (record) this.#validate(record);
+      // Evaluate the current proposal before reconciling an older attempt: that attempt is then either
+      // still live (blocks), replaceable (expired) or moot (superseded) and no longer blocks this change.
       const minimum = context(await this.chain.getSlot("confirmed"), record?.observedSlot ?? 0);
       const current = await this.#account(pocket, minimum);
+      if (record) record = await this.#reconcile(record);
       if (!current.proposal || current.account.pending!.executableAfterSlot > BigInt(current.slot)) return;
-      if (record && record.proposal !== current.proposal && !["finalized", "failed", "expired"].includes(record.state)) return;
-      if (!record || record.proposal !== current.proposal || record.state === "expired") {
-        const latest = await this.chain.getLatestBlockhashAndContext({ commitment: "confirmed", minContextSlot: current.slot });
-        context(latest.context.slot, current.slot); context(latest.value.lastValidBlockHeight);
+      if (record && record.proposal !== current.proposal && !terminalCrankStates.includes(record.state)) return;
+      if (!record || record.proposal !== current.proposal || record.state === "expired" || record.state === "superseded") {
+        // Never older than the evidence reconciliation just recorded: a replacement must not regress it.
+        const floor = Math.max(current.slot, record?.observedSlot ?? 0);
+        const latest = await this.chain.getLatestBlockhashAndContext({ commitment: "confirmed", minContextSlot: floor });
+        context(latest.context.slot, floor); context(latest.value.lastValidBlockHeight);
         const tx = new Transaction({ feePayer: this.payer.publicKey, ...latest.value })
           .add(executeChangeIx(this.payer.publicKey, new PublicKey(pocket)));
         tx.sign(this.payer);
