@@ -1,26 +1,32 @@
 /**
- * The device-side prover (build plan section 7: proving stays on the
- * device so the secret never reaches a server).
+ * The device-side prover: proving stays on the device, so the identity
+ * secret never reaches a server.
  *
  * Artifacts (circuit wasm + proving key) are fetched once, checked
- * against pinned SHA-256 integrity hashes (supply-chain control from the
- * threat model), cached, and handed to snarkjs. Use `createProver` in a
- * web worker where possible; proving takes 1–2 s on a laptop, 2–5 s on a
- * phone.
+ * against pinned SHA-256 integrity hashes when you supply them (the
+ * supply-chain control in the threat model), cached, and handed to
+ * snarkjs. Use `createProver` in a web worker where possible: a login
+ * proof takes seconds (docs/benchmarks.md).
  */
 import * as snarkjs from "snarkjs";
 
 export interface CircuitArtifacts {
   wasmUrl: string;
   zkeyUrl: string;
-  /** Hex SHA-256 of each artifact; refuse to prove when they mismatch. */
+  /**
+   * Hex SHA-256 of each artifact; proving is refused on a mismatch.
+   * Without them the downloaded files are used unchecked, so whoever
+   * controls those URLs controls what runs on the user's secret: pin
+   * both in production.
+   */
   wasmSha256?: string;
   zkeySha256?: string;
 }
 
 export interface ProverConfig {
   login: CircuitArtifacts;
-  owner: CircuitArtifacts;
+  /** Only needed to prove owner actions; login-only sites can leave it out. */
+  owner?: CircuitArtifacts;
   fetchFn?: typeof fetch;
 }
 
@@ -70,7 +76,10 @@ export function createProver(config: ProverConfig): Prover {
 
   return {
     async prove(circuit, input) {
+      if (circuit !== "login" && circuit !== "owner") throw new Error(`unknown circuit: ${String(circuit)}`);
       const art = config[circuit];
+      // Login-only sites configure no owner circuit: fail before any download.
+      if (!art) throw new Error(`no ${circuit} circuit artifacts configured: pass createProver({ ${circuit}: { wasmUrl, zkeyUrl, wasmSha256, zkeySha256 } })`);
       const [wasm, zkey] = await Promise.all([
         load(art.wasmUrl, art.wasmSha256),
         load(art.zkeyUrl, art.zkeySha256),

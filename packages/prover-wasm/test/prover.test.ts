@@ -40,3 +40,15 @@ describe("prover artifact integrity", () => {
     expect(fullProve).toHaveBeenCalledTimes(2);
   });
 });
+
+describe("login-only configuration", () => {
+  it("needs no owner artifacts, and refuses an owner proof clearly without downloading", async () => {
+    const prover = createProver({ login: { ...artifacts, wasmSha256: hash, zkeySha256: hash }, fetchFn: fetchFn as typeof fetch });
+    await prover.prove("login", {});
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    await expect(prover.prove("owner", {})).rejects.toThrow("no owner circuit artifacts configured");
+    await expect(prover.prove("__proto__" as never, {})).rejects.toThrow("unknown circuit");
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect(fullProve).toHaveBeenCalledTimes(1);
+  });
+});
