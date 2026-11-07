@@ -6,7 +6,9 @@
 //! Solana's Ed25519 precompile, inspected instruction-by-instruction) and
 //! appends one leaf to an append-only Merkle tree. There is no update, no
 //! delete, and no admin — a wallet that wants a new secret uses a new
-//! wallet.
+//! wallet. Recent roots are kept one per ~1-minute bucket (see
+//! `ghostlink_verifier::merkle::RootRing`), so a burst of registrations
+//! cannot push the roots in-flight proofs use out of the history.
 
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::instruction::get_stack_height;
@@ -37,8 +39,9 @@ pub mod ghostlink_registry {
     /// Creates the tree state. Called once; the deployer has no further
     /// powers afterwards — nothing about the caller is stored.
     pub fn initialize(ctx: Context<Initialize>) -> Result<()> {
+        let slot = Clock::get()?.slot;
         let mut tree = ctx.accounts.tree_state.load_init()?;
-        tree.roots[0] = ghostlink_verifier::merkle::empty_root();
+        tree.ring().reset(ghostlink_verifier::merkle::empty_root(), slot);
         Ok(())
     }
 
@@ -72,6 +75,7 @@ pub mod ghostlink_registry {
         let leaf = poseidon::registry_leaf(&ctx.accounts.wallet.key().to_bytes(), &commitment)
             .map_err(|_| error!(RegistryError::HashFailed))?;
 
+        let slot = Clock::get()?.slot;
         let mut tree = ctx.accounts.tree_state.load_mut()?;
         let tree_ref = &mut *tree;
         let leaf_index = tree_ref.next_index;
@@ -81,16 +85,12 @@ pub mod ghostlink_registry {
         }
         .append(leaf)
         .map_err(|_| error!(RegistryError::TreeFull))?;
-        RootRing {
-            roots: &mut tree_ref.roots,
-            cursor: &mut tree_ref.root_cursor,
-        }
-        .push(root);
+        tree_ref.ring().record(root, slot);
 
         let binding = &mut ctx.accounts.binding;
         binding.leaf_index = leaf_index;
         binding.commitment = commitment;
-        binding.slot = Clock::get()?.slot;
+        binding.slot = slot;
 
         emit!(Registered {
             leaf_index,
@@ -98,6 +98,7 @@ pub mod ghostlink_registry {
             root,
             wallet: ctx.accounts.wallet.key(),
             commitment,
+            slot,
         });
         Ok(())
     }
@@ -200,10 +201,20 @@ pub struct TreeState {
     pub roots: [[u8; 32]; ROOT_HISTORY],
     pub root_cursor: u8,
     pub _padding: [u8; 7],
+    /// Slot at which each `roots` entry was last written.
+    pub root_slots: [u64; ROOT_HISTORY],
 }
 
 impl TreeState {
-    pub const SIZE: usize = 8 + 8 + 32 * TREE_DEPTH + 32 * ROOT_HISTORY + 1 + 7;
+    pub const SIZE: usize = 8 + 8 + 32 * TREE_DEPTH + 32 * ROOT_HISTORY + 1 + 7 + 8 * ROOT_HISTORY;
+
+    fn ring(&mut self) -> RootRing<'_> {
+        RootRing {
+            roots: &mut self.roots,
+            slots: &mut self.root_slots,
+            cursor: &mut self.root_cursor,
+        }
+    }
 }
 
 #[account]
@@ -260,6 +271,8 @@ pub struct Registered {
     pub root: [u8; 32],
     pub wallet: Pubkey,
     pub commitment: [u8; 32],
+    /// The slot the leaf was appended at; it decides the leaf's root bucket.
+    pub slot: u64,
 }
 
 #[error_code]

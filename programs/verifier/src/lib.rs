@@ -15,7 +15,7 @@ pub mod vks;
 pub mod zeros;
 
 pub use groth16::{verify_login, verify_owner, LOGIN_PUBLIC_INPUTS, OWNER_PUBLIC_INPUTS};
-pub use merkle::{RootRing, Frontier, ROOT_HISTORY, TREE_DEPTH};
+pub use merkle::{RootRing, Frontier, ROOT_BUCKET_SLOTS, ROOT_HISTORY, TREE_DEPTH};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum VerifierError {

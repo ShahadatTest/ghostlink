@@ -6,6 +6,10 @@
 //! prove "I held at least X as of slot S" without revealing which wallet.
 //! The program only ever reads accounts the token programs own, so a
 //! snapshot can never lie about a balance.
+//!
+//! Recent roots are kept one per ~1-minute bucket (see
+//! `ghostlink_verifier::merkle::RootRing`), so no burst of snapshots can
+//! push the roots in-flight proofs use out of the history (ADR 0005).
 
 use anchor_lang::prelude::*;
 use ghostlink_verifier::merkle::{Frontier, RootRing, ROOT_HISTORY, TREE_DEPTH};
@@ -26,8 +30,9 @@ pub mod ghostlink_census {
 
     /// Creates the census tree. Called once; stores nothing about the caller.
     pub fn initialize(ctx: Context<Initialize>) -> Result<()> {
+        let slot = Clock::get()?.slot;
         let mut tree = ctx.accounts.tree_state.load_init()?;
-        tree.roots[0] = ghostlink_verifier::merkle::empty_root();
+        tree.ring().reset(ghostlink_verifier::merkle::empty_root(), slot);
         Ok(())
     }
 
@@ -88,11 +93,7 @@ pub mod ghostlink_census {
         }
         .append(leaf)
         .map_err(|_| error!(CensusError::TreeFull))?;
-        RootRing {
-            roots: &mut tree_ref.roots,
-            cursor: &mut tree_ref.root_cursor,
-        }
-        .push(root);
+        tree_ref.ring().record(root, slot);
 
         emit!(SnapshotTaken {
             leaf_index,
@@ -115,10 +116,20 @@ pub struct TreeState {
     pub roots: [[u8; 32]; ROOT_HISTORY],
     pub root_cursor: u8,
     pub _padding: [u8; 7],
+    /// Slot at which each `roots` entry was last written.
+    pub root_slots: [u64; ROOT_HISTORY],
 }
 
 impl TreeState {
-    pub const SIZE: usize = 8 + 8 + 32 * TREE_DEPTH + 32 * ROOT_HISTORY + 1 + 7;
+    pub const SIZE: usize = 8 + 8 + 32 * TREE_DEPTH + 32 * ROOT_HISTORY + 1 + 7 + 8 * ROOT_HISTORY;
+
+    fn ring(&mut self) -> RootRing<'_> {
+        RootRing {
+            roots: &mut self.roots,
+            slots: &mut self.root_slots,
+            cursor: &mut self.root_cursor,
+        }
+    }
 }
 
 #[derive(Accounts)]

@@ -4,7 +4,7 @@
 
 use ghostlink_verifier::encoding::{is_in_field, split32};
 use ghostlink_verifier::intent::Intent;
-use ghostlink_verifier::merkle::{empty_root, Frontier, RootRing, ROOT_HISTORY, TREE_DEPTH};
+use ghostlink_verifier::merkle::{empty_root, Frontier, RootRing, ROOT_BUCKET_SLOTS, ROOT_HISTORY, TREE_DEPTH};
 use ghostlink_verifier::poseidon;
 use ghostlink_verifier::zeros::ZEROS;
 use num_bigint::BigUint;
@@ -149,24 +149,35 @@ fn frontier_append_matches_fixture_roots() {
 }
 
 #[test]
-fn root_ring_pushes_and_finds() {
+fn root_ring_keeps_one_root_per_bucket_and_finds() {
     let mut roots = [[0u8; 32]; ROOT_HISTORY];
+    let mut slots = [0u64; ROOT_HISTORY];
     let mut cursor = 0u8;
     let mut ring = RootRing {
         roots: &mut roots,
+        slots: &mut slots,
         cursor: &mut cursor,
     };
-    for i in 0..200u32 {
+    let root = |i: u32| {
         let mut r = [0u8; 32];
         r[28..].copy_from_slice(&i.to_be_bytes());
-        ring.push(r);
+        r
+    };
+    ring.reset(empty_root(), 0);
+    // Root i lands in bucket i / 2: two appends per bucket, 100 buckets.
+    for i in 0..200u32 {
+        ring.record(root(i), u64::from(i / 2) * ROOT_BUCKET_SLOTS + u64::from(i % 2));
     }
-    let mut recent = [0u8; 32];
-    recent[28..].copy_from_slice(&199u32.to_be_bytes());
-    let mut evicted = [0u8; 32];
-    evicted[28..].copy_from_slice(&10u32.to_be_bytes());
-    assert!(ring.contains(&recent));
-    assert!(!ring.contains(&evicted));
+    assert!(ring.contains(&root(199)), "the newest bucket root");
+    assert!(ring.contains(&root(11)), "a completed bucket's final root");
+    assert!(!ring.contains(&root(10)), "a root superseded inside its bucket");
+    // 100 more buckets push the oldest ones out.
+    for i in 200..400u32 {
+        ring.record(root(i), u64::from(i / 2) * ROOT_BUCKET_SLOTS);
+    }
+    assert!(!ring.contains(&root(11)));
+    assert!(ring.contains(&root(399)));
+    assert_eq!(usize::from(*ring.cursor), 199 % ROOT_HISTORY, "one ring entry per bucket");
 }
 
 #[test]

@@ -111,15 +111,7 @@ fn setup() -> Ctx {
         ],
         data: ix_data("initialize", &()),
     };
-    let init_cen = Instruction {
-        program_id: pk(CENSUS_ID),
-        accounts: vec![
-            AccountMeta::new(h.payer.pubkey(), true),
-            meta_w(census_tree),
-            meta_r(pk(SYSTEM_ID)),
-        ],
-        data: ix_data("initialize", &()),
-    };
+    let init_cen = census_initialize_ix(&h.payer.pubkey());
     h.send(&[init_reg, init_cen], &[]).expect("initialize trees");
 
     Ctx {
@@ -177,16 +169,7 @@ fn snapshot(ctx: &mut Ctx) {
         token_account(&ctx.usdc, &ctx.wallet.pubkey(), 150_000_000),
     )
     .unwrap();
-    let ix = Instruction {
-        program_id: pk(CENSUS_ID),
-        accounts: vec![
-            AccountMeta::new(ctx.h.payer.pubkey(), true),
-            meta_r(ctx.wallet.pubkey()),
-            meta_r(holding),
-            meta_w(ctx.census_tree),
-        ],
-        data: ix_data("snapshot", &()),
-    };
+    let ix = census_snapshot_ix(&ctx.h.payer.pubkey(), &ctx.wallet.pubkey(), &holding);
     ctx.h.send(&[ix], &[]).expect("snapshot");
 
     let data = ctx.h.account_data(&ctx.census_tree).unwrap();
@@ -709,12 +692,7 @@ fn census_rejects_multisig_disguised_as_a_balance() {
     assert_eq!(data[108], 1);
 
     let before = ctx.h.account_data(&ctx.census_tree).unwrap();
-    let ix = Instruction {
-        program_id: pk(CENSUS_ID),
-        accounts: vec![AccountMeta::new(ctx.h.payer.pubkey(), true), meta_r(ctx.wallet.pubkey()),
-            meta_r(multisig.pubkey()), meta_w(ctx.census_tree)],
-        data: ix_data("snapshot", &()),
-    };
+    let ix = census_snapshot_ix(&ctx.h.payer.pubkey(), &ctx.wallet.pubkey(), &multisig.pubkey());
     let err = ctx.h.send_expect_err(&[ix], &[]);
     assert!(err.contains("Custom(6000)") || err.contains("NotATokenAccount"), "{err}");
     assert_eq!(ctx.h.account_data(&ctx.census_tree).unwrap(), before);

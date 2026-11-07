@@ -17,6 +17,9 @@ use solana_transaction::Transaction;
 use std::path::PathBuf;
 use std::str::FromStr;
 
+pub mod census;
+pub use census::*;
+
 /// Minimal ed25519 signer for tests (see Cargo.toml for why this exists
 /// instead of solana-keypair).
 #[derive(Clone)]
