@@ -31,6 +31,8 @@ On 2026-10-17, a disposable Agave 3.0.15 validator completed the full V2 Pocket 
 
 The earlier standalone fork test exercised six swaps: both directions with direct, shared, and shared-destination accounts. The full Pocket test currently uses the direct route variant. These are real program executions on a local fork, with **synthetic quotes and Pyth accounts**, not live Jupiter API responses, public-chain trades, commercial bot adoption or production approval.
 
+Both runs predate the [ADR 0006](adr/0006-pocket-hardening.md) Pocket hardening. The harness now writes its synthetic prices at the sponsored push-feed addresses and follows the new account layout, the `fill_begin` output-mint account and the authorization epoch, but the fork journey has not been repeated since.
+
 The cloned binaries were observed at finalized mainnet slot 457793783:
 
 | Program | SHA-256 of captured program bytes |

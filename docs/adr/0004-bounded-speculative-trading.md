@@ -1,6 +1,6 @@
 # ADR 0004: bounded speculative buys and tracked exits
 
-Status: implemented development candidate, 2026-10-17. Localnet only, no independent security review or public deployment. This supersedes ADR 0001's passkey-only unpriced-output rule for the new account version. Existing deployments are unchanged.
+Status: implemented development candidate, 2026-10-17. Localnet only, no independent security review or public deployment. This supersedes ADR 0001's passkey-only unpriced-output rule for the new account version. Existing deployments are unchanged. Amended by [ADR 0006](0006-pocket-hardening.md): the daily counters are rolling windows, speculative buys refuse freezable mints, an owner sweep writes off a frozen position, and the allocation is 3,693 bytes.
 
 ## Decision
 

@@ -1,6 +1,6 @@
 # ADR 0003: Bind pocket session consent to policy and deployment
 
-Status: locally verified candidate, pending independent review. Not deployed.
+Status: locally verified candidate, pending independent review. Not deployed. Amended by [ADR 0006](0006-pocket-hardening.md): the context below is now `ghostlink:open-session:v3` and also binds the pocket's revocation epoch.
 
 ## Problem
 
