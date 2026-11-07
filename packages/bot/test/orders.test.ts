@@ -131,7 +131,8 @@ describe("durable bot orders", () => {
         expect(bytes.includes(Buffer.from(recovered.signature.signature).toString("hex"))).toBe(false);
       }
     }
-  });
+    // Two real Node processes, each allowed 15 s by spawnSync, must fit inside the test's own limit.
+  }, 45_000);
 
   it("refuses cancellation during signing, keeps reservations burned and never leaks a signature before persistence", async () => {
     const w = await world(), original = w.store.withSeed.bind(w.store);
