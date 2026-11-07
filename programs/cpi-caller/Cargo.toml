@@ -17,6 +17,13 @@ no-entrypoint = []
 no-idl = []
 no-log-ix-name = []
 idl-build = ["anchor-lang/idl-build"]
+# Declared so the cfgs that Anchor's macros emit are known to rustc; none is enabled by default.
+anchor-debug = []
+custom-heap = []
+custom-panic = []
 
 [dependencies]
 anchor-lang = "0.32.1"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("solana"))'] }

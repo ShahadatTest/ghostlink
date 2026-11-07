@@ -3,6 +3,8 @@ name = "ghostlink-verifier"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+# Built and deployed from this repository; not published to crates.io.
+publish = false
 description = "Groth16 verification, Poseidon helpers and shared encodings for the GhostLink programs. A library linked into registry and pocket, never a program of its own, so there is no cross-program trust boundary around proof checks."
 
 [dependencies]

@@ -9,7 +9,7 @@
 //! and the only exit for funds is your home address — changing that
 //! takes your secret plus a 24-hour wait.
 //!
-//! Safety invariants (tested, to be audited, see docs/build-plan.md §6):
+//! Safety invariants (tested, not yet independently audited; see docs/THREAT-MODEL.md):
 //! - no instruction moves tokens to a non-home address except an atomic
 //!   begin/end fill pair;
 //! - the pocket PDA only ever signs SPL Token Transfer/CloseAccount CPIs
@@ -46,7 +46,7 @@ pub mod token;
 use oracle::{read_price, usd_e6};
 use precompile::{check_session_signature, WebauthnData};
 use state::*;
-use token::{close_pocket_account, parse_token_account, transfer_from_pocket, TOKEN_PROGRAM_ID};
+use token::{close_pocket_account, parse_token_account, transfer_from_pocket};
 
 declare_id!("HbSux9YnTupzNiRUwdR2mjTpJJryx25RV42wry4kCwiH");
 

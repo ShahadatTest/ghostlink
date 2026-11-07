@@ -2,6 +2,12 @@
 //! `packages/common/src/poseidon.ts`. Uses the `sol_poseidon` syscall on
 //! chain (circomlib parameters over BN254) and the same parameters
 //! natively in tests.
+//!
+//! solana-poseidon 3.x marks its whole API deprecated ahead of moving it
+//! behind an `agave-unstable-api` feature in 4.0. The syscall and its
+//! parameters are unchanged, so the notice is acknowledged here once;
+//! upgrading to 4.x must enable that feature.
+#![allow(deprecated)]
 
 use crate::encoding::{split32, u64_fe, ONE_FE, ZERO_FE};
 use crate::VerifierError;

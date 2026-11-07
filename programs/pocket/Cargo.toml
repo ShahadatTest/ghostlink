@@ -3,6 +3,8 @@ name = "ghostlink-pocket"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+# Built and deployed from this repository; not published to crates.io.
+publish = false
 description = "GhostLink pocket: a per-app spending account that fills intents atomically, enforces an oracle-checked slippage floor and daily cap, and can only ever withdraw to its home address."
 
 [lib]
@@ -16,8 +18,15 @@ no-entrypoint = []
 no-idl = []
 no-log-ix-name = []
 idl-build = ["anchor-lang/idl-build"]
+# Declared so the cfgs that Anchor's macros emit are known to rustc; none is enabled by default.
+anchor-debug = []
+custom-heap = []
+custom-panic = []
 
 [dependencies]
 anchor-lang = { version = "0.32.1", features = ["init-if-needed"] }
 ghostlink-verifier = { path = "../verifier" }
 solana-sha256-hasher = "3.0"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("solana"))'] }

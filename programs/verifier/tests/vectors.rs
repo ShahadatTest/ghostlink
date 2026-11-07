@@ -1,8 +1,8 @@
 //! Vector tests: Rust must reproduce packages/common/fixtures/vectors.json
-//! byte for byte (build plan, test layer 1). If these fail, the TypeScript
+//! byte for byte. If these fail, the TypeScript
 //! and Rust stacks disagree about the protocol.
 
-use ghostlink_verifier::encoding::{is_in_field, split32, u64_fe};
+use ghostlink_verifier::encoding::{is_in_field, split32};
 use ghostlink_verifier::intent::Intent;
 use ghostlink_verifier::merkle::{empty_root, Frontier, RootRing, ROOT_HISTORY, TREE_DEPTH};
 use ghostlink_verifier::poseidon;
