@@ -16,6 +16,19 @@ export interface RelayerRecord {
 }
 export interface FundingEvidence { balanceLamports: bigint; slot: number; minimumReserveLamports: bigint }
 const hex32 = (s: string) => typeof s === "string" && /^[0-9a-f]{64}$/.test(s);
+const SPENDING_WINDOW_MS = 86_400_000;
+/**
+ * A record that can no longer affect spending, liquidity or a broadcast: a finalized receipt whose
+ * slot this balance read covers and whose charge left the rolling 24-hour window, or an expired
+ * claim that never saved a packet (nothing is sent before its packet is saved). Pending, confirmed
+ * and unknown packets never qualify; they stay reserved until reconciled.
+ */
+function settled(record: RelayerRecord, balanceSlot: number, now: number): boolean {
+  if (!record.packet) return record.lease !== undefined && record.lease.until <= now;
+  const slot = record.observation.slot;
+  return record.observation.confirmationStatus === "finalized" && slot !== undefined && Number.isSafeInteger(slot) && slot <= balanceSlot &&
+    record.chargedAt !== undefined && now - record.chargedAt >= SPENDING_WINDOW_MS;
+}
 function journalNamespace(scope: RelayerScope): string {
   const ordered = { genesisHash: scope.genesisHash, payer: scope.payer, pocket: scope.pocket, registry: scope.registry, census: scope.census };
   for (const id of Object.values(ordered)) if (typeof id !== "string" || new PublicKey(id).toBase58() !== id) throw new Error("invalid relayer scope");
@@ -114,7 +127,7 @@ export class RelayerJournal {
     let total = 0n;
     for (const row of this.#storage.db.prepare("SELECT id FROM operations").all()) {
       const r = this.get(String(row.id))!;
-      if (r.packet && r.chargedAt !== undefined && now - r.chargedAt < 86_400_000) total += BigInt(r.packet.feeLamports) + BigInt(r.packet.rentLamports);
+      if (r.packet && r.chargedAt !== undefined && now - r.chargedAt < SPENDING_WINDOW_MS) total += BigInt(r.packet.feeLamports) + BigInt(r.packet.rentLamports);
     }
     return total;
   }
@@ -122,15 +135,36 @@ export class RelayerJournal {
   inspect(balanceSlot: number, now = this.#now()) {
     let spent = 0n, unsettled = 0n;
     const ids = this.#storage.db.prepare("SELECT id FROM operations ORDER BY id").all();
-    const reconcileIds: string[] = [];
+    const reconcileIds: string[] = [], prunable: string[] = [];
     for (const row of ids) {
-      const record = this.get(String(row.id))!; if (!record.packet) continue;
+      const record = this.get(String(row.id))!;
+      if (prunable.length < 100 && settled(record, balanceSlot, now)) prunable.push(record.id);
+      if (!record.packet) continue;
       const cost = BigInt(record.packet.feeLamports) + BigInt(record.packet.rentLamports);
-      if (record.chargedAt !== undefined && now - record.chargedAt < 86_400_000) spent += cost;
+      if (record.chargedAt !== undefined && now - record.chargedAt < SPENDING_WINDOW_MS) spent += cost;
       if (record.observation.confirmationStatus !== "finalized" || (record.observation.slot ?? Infinity) > balanceSlot) unsettled += cost;
       if (record.observation.confirmationStatus !== "finalized") reconcileIds.push(record.id);
     }
-    return { records: ids.length, maximumRecords: this.maximumRecords, spent, unsettled, reconcileIds };
+    return { records: ids.length, maximumRecords: this.maximumRecords, spent, unsettled, reconcileIds, prunable };
+  }
+  /**
+   * Retention, so permissionless traffic (e.g. snapshots of arbitrary accounts) cannot fill the
+   * record limit forever. Rechecks each ID inside the write transaction and deletes only settled
+   * records: removing them changes neither the 24-hour spend nor unsettled liquidity. A later
+   * request reusing a pruned ID is a new operation. Active, unrestored journals only.
+   */
+  prune(ids: readonly string[], balanceSlot: number, now = this.#now()): number {
+    if (ids.length > 100 || !ids.every(hex32) || !Number.isSafeInteger(balanceSlot) || balanceSlot < 0) throw new Error("invalid relayer retention request");
+    return this.#storage.transaction(() => {
+      this.assertSubmissionAllowed();
+      let removed = 0;
+      for (const id of ids) {
+        const record = this.get(id);
+        if (!record || !settled(record, balanceSlot, now)) continue;
+        this.#storage.db.prepare("DELETE FROM operations WHERE id=?").run(id); removed++;
+      }
+      return removed;
+    });
   }
   claim(id: string, digest: string): { record: RelayerRecord; token?: string } {
     if (!hex32(id) || !hex32(digest)) throw new Error("invalid relayer request identity");

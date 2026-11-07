@@ -1,6 +1,6 @@
-import { Connection, PublicKey, Transaction } from "@solana/web3.js";
+import { Connection, PublicKey, Transaction, VersionedTransaction } from "@solana/web3.js";
 import { relayerRequestDigest, type RelayerRoute } from "@ghostlink/common";
-import { POCKET, REGISTRY, CENSUS } from "@ghostlink/service-kit";
+import { HttpError, POCKET, REGISTRY, CENSUS } from "@ghostlink/service-kit";
 import bs58 from "bs58";
 import { RelayerJournal, type RelayerPacket, type RelayerReceipt, type RelayerRecord } from "./journal.js";
 
@@ -32,8 +32,30 @@ export class RelayerSubmission {
     if (journal.scope.pocket !== POCKET.toBase58() || journal.scope.registry !== REGISTRY.toBase58() || journal.scope.census !== CENSUS.toBase58()) throw new Error("relayer journal program mismatch");
     if (["EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG", "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d"].includes(journal.scope.genesisHash)) throw new Error("V2 relayer has no verified public deployment");
   }
-  #validate(packet: RelayerPacket): void {
-    validateRelayerPacket(packet, this.journal.scope.payer);
+  #validate(packet: RelayerPacket): Transaction {
+    return validateRelayerPacket(packet, this.journal.scope.payer);
+  }
+  /**
+   * Proofs and signatures inside the instructions are only checked on chain, and a preflight
+   * failure after the reservation would keep its fee/rent charged with no landing transaction.
+   * So the exact signed message must simulate cleanly before anything is reserved. As in the
+   * solver, the provider gets that message with zeroed signatures and sigVerify off: no
+   * broadcastable transaction leaves this process before its journal record exists. The payer
+   * and auxiliary signatures were already verified locally.
+   */
+  async #simulate(packet: RelayerPacket, signed: Transaction): Promise<void> {
+    const unsigned = VersionedTransaction.deserialize(Buffer.from(packet.rawBase64, "base64"));
+    unsigned.signatures = unsigned.signatures.map(signature => new Uint8Array(signature.length));
+    if (!Buffer.from(unsigned.message.serialize()).equals(signed.serializeMessage())) throw new Error("relayer simulation message mismatch");
+    let failed: boolean;
+    try {
+      const result = await this.chain.simulateTransaction(unsigned, { commitment: "confirmed", minContextSlot: packet.minContextSlot,
+        sigVerify: false, replaceRecentBlockhash: false });
+      context(result.context.slot, packet.minContextSlot);
+      if ("replacementBlockhash" in result.value && result.value.replacementBlockhash) throw new Error("substituted simulation blockhash");
+      failed = result.value.err !== null;
+    } catch { throw new HttpError(503, "transaction simulation unavailable; nothing was reserved; retry the same request"); }
+    if (failed) throw new HttpError(422, "transaction failed simulation; nothing was reserved or broadcast");
   }
   async #genesis() {
     if (await this.chain.getGenesisHash() !== this.journal.scope.genesisHash) throw new Error("relayer chain mismatch");
@@ -68,7 +90,8 @@ export class RelayerSubmission {
     const claim = this.journal.claim(id, digest); let record: RelayerRecord = claim.record;
     if (claim.token) {
       try {
-        this.preparationGuard(); const packet = await prepare(); this.#validate(packet);
+        this.preparationGuard(); const packet = await prepare();
+        await this.#simulate(packet, this.#validate(packet)); // Refusal releases the claim below: no reservation, no record.
         const balance = await this.chain.getBalanceAndContext(new PublicKey(this.journal.scope.payer), { commitment: "confirmed", minContextSlot: packet.minContextSlot });
         context(balance.context.slot, packet.minContextSlot);
         if (!Number.isSafeInteger(balance.value) || balance.value < 0) throw new Error("invalid relayer payer balance");

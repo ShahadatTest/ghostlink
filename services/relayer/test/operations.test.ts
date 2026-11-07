@@ -13,12 +13,12 @@ import { RelayerJournal } from "../src/journal.js";
 
 const cleanups: (() => void | Promise<void>)[] = [];
 afterEach(async () => { for (const close of cleanups.splice(0).reverse()) await close(); });
-function fixture() {
+function fixture(wallClock = Date.now) {
   let now = 0, slot = 10, lamports = 100_000_000;
   const genesis = Keypair.generate().publicKey.toBase58(), payer = Keypair.generate();
   const dir = mkdtempSync(join(tmpdir(), "relayer-ops-")), path = join(dir, "journal.db");
   const journal = new RelayerJournal(path, randomBytes(32), { genesisHash: genesis, payer: payer.publicKey.toBase58(),
-    pocket: POCKET.toBase58(), registry: REGISTRY.toBase58(), census: CENSUS.toBase58() });
+    pocket: POCKET.toBase58(), registry: REGISTRY.toBase58(), census: CENSUS.toBase58() }, undefined, wallClock);
   cleanups.push(() => { journal.close(); rmSync(dir, { recursive: true, force: true }); });
   const connection = {
     getGenesisHash: vi.fn(async () => genesis),
@@ -56,6 +56,22 @@ describe("relayer admission evidence", () => {
     f.operations.drain(); expect(f.operations.idle).toBe(false);
     release(); await probe; expect(f.operations.idle).toBe(true);
     expect(f.operations.snapshot().ready).toBe(false);
+  });
+  it("prunes settled receipts in the background probe without changing spend or liquidity reservations", async () => {
+    let wall = 1_800_000_000_000;
+    const f = fixture(() => wall), ids = ["0a".repeat(32), "0b".repeat(32)];
+    for (const id of ids) {
+      const claim = f.journal.claim(id, id);
+      f.journal.prepare(id, claim.token!, { rawBase64: "AA==", signature: id, blockhash: f.genesis,
+        lastValidBlockHeight: 100, minContextSlot: 10, feeLamports: "100", rentLamports: "0" },
+        { balanceLamports: 100_000_000n, slot: 10, minimumReserveLamports: 50_000_000n });
+    }
+    f.journal.observe(ids[0]!, { requestIdHex: ids[0]!, signature: ids[0]!, state: "finalized", confirmationStatus: "finalized", slot: 10 }, 10);
+    await ready(f);
+    expect(f.operations.snapshot()).toMatchObject({ ready: true, retainedRecords: 2, spentLamports24h: "200", unsettledLamports: "100" });
+    wall += 86_400_000; f.advance(); await f.operations.refresh();
+    expect(f.journal.get(ids[0]!)).toBeUndefined(); expect(f.journal.get(ids[1]!)?.packet).toBeDefined();
+    expect(f.operations.snapshot()).toMatchObject({ ready: true, retainedRecords: 1, spentLamports24h: "0", unsettledLamports: "100" });
   });
   it("requires fresh advancing chain evidence, payer reserve and actual writable authenticated storage", async () => {
     const f = fixture();

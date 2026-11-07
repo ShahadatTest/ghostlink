@@ -1,13 +1,17 @@
 /**
- * The relayer / paymaster (build plan section 7).
+ * The relayer / paymaster.
  *
  * In plain language: users never pay fees or even hold SOL to use
  * GhostLink; this service wraps their signed messages and proofs in
  * transactions and pays. It can't forge anything — the programs demand
  * the user's own signature or proof inside every instruction — so the
  * worst a hacked relayer can do is stop working. Spam control: per-IP
- * and per-wallet rate limits, a rolling daily spend budget, and an
- * optional allowlist of origins whose pockets it will create.
+ * and per-wallet rate limits, simulation before any reservation, a
+ * rolling daily spend budget, and an optional allowlist of origins whose
+ * pockets it will create. What the programs cannot stop is a registered
+ * identity asking for many successful but useless transactions (one
+ * pocket per invented origin, each costing rent): the budget and the
+ * origin allowlist bound that.
  *
  * The instruction allowlist is this file: register, snapshot,
  * open_session, sweep_home (plus the home's missing token accounts),
@@ -278,7 +282,7 @@ export function buildServer(deps: RelayerDeps): Server & { drain(): void; readon
             }),
           );
         } else {
-          throw badRequest("policy changes go through proposePolicy (todo M2)");
+          throw badRequest("this relayer only submits home changes; policy changes are not supported here");
         }
         break;
       }

@@ -69,6 +69,7 @@ async function provider() {
         [{ owner: POCKET.toBase58(), executable: false, lamports: 1, rentEpoch: 0, data: [pocketData.toString("base64"), "base64"] }] });
       if (call.method === "getBlockHeight") return reply(slot);
       if (call.method === "getFeeForMessage") return reply({ context: { slot }, value: 10000 });
+      if (call.method === "simulateTransaction") return reply({ context: { slot }, value: { err: null, logs: [], unitsConsumed: 1000 } });
       if (call.method === "sendTransaction") {
         state.packets.push(raw);
         const signature = bs58.encode(Transaction.from(Buffer.from(call.params[0], "base64")).signature);

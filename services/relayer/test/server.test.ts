@@ -5,7 +5,7 @@ import { randomBytes } from "node:crypto";
 import { RelayerJournal } from "../src/journal.js";
 import { once } from "node:events";
 import { describe, expect, it, vi } from "vitest";
-import { Connection, Keypair, SystemProgram, Transaction } from "@solana/web3.js";
+import { Connection, Keypair, SystemProgram, Transaction, type VersionedTransaction } from "@solana/web3.js";
 import bs58 from "bs58";
 import { POCKET_ACCOUNT_SIZE, POCKET, CENSUS, REGISTRY } from "@ghostlink/service-kit";
 import { buildServer, type RelayerDeps } from "../src/server.js";
@@ -13,9 +13,10 @@ import { buildServer, type RelayerDeps } from "../src/server.js";
 const payer = Keypair.generate();
 const genesisHash = Keypair.generate().publicKey.toBase58();
 function rpc(balance = 1_000_000_000) {
-  let slot = 48;
+  let slot = 48, simulationError: unknown = null;
   const accepted = new Set<string>();
   return {
+    failSimulation: (error: unknown) => { simulationError = error; },
     getBalanceAndContext: vi.fn(async () => ({ context: { slot: ++slot }, value: balance })),
     getGenesisHash: vi.fn(async () => genesisHash),
     getBlockHeight: vi.fn(async () => 50),
@@ -24,6 +25,8 @@ function rpc(balance = 1_000_000_000) {
     getLatestBlockhashAndContext: vi.fn(async () => ({ context: { slot }, value: { blockhash: Keypair.generate().publicKey.toBase58(), lastValidBlockHeight: 100 } })),
     getFeeForMessage: vi.fn(async () => ({ context: { slot }, value: 10_000 })),
     getMinimumBalanceForRentExemption: vi.fn(async () => 30_000_000),
+    simulateTransaction: vi.fn(async (_tx: VersionedTransaction, _config?: Record<string, unknown>) =>
+      ({ context: { slot }, value: { err: simulationError, logs: ["SYNTHETIC_PROVIDER_LOG"], unitsConsumed: 1000 } })),
     sendRawTransaction: vi.fn(async (bytes: Uint8Array) => { const signature = bs58.encode(Transaction.from(bytes).signature!); accepted.add(signature); return signature; }),
     confirmTransaction: vi.fn(async () => ({ value: { err: null } })),
   };
@@ -205,6 +208,51 @@ describe("relayer fee and creation boundary", () => {
       expect((await fetch(`${base}/submissions/${body.requestIdHex}`)).status).toBe(503);
       expect(server.active).toBe(0);
       expect(connection.sendRawTransaction).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("simulates before reserving, so invalid proofs cannot exhaust the budget or leave unsettled records", async () => {
+    const connection = rpc();
+    connection.failSimulation({ InstructionError: [1, { Custom: 6000 }] });
+    // A single pocket creation (rent plus fee) uses this whole budget; refused simulations must not count.
+    await withServer({ connection: connection as unknown as Connection, dailyBudgetLamports: 30_010_000n }, async (base, server) => {
+      for (let i = 0; i < 5; i++) {
+        const body = { ...opening(), appIdHex: randomBytes(32).toString("hex"), requestIdHex: randomBytes(32).toString("hex") };
+        const response = await post(base, "open-session", body);
+        expect(response.status).toBe(422);
+        expect(await response.text()).not.toContain("SYNTHETIC_PROVIDER_LOG");
+        expect((await fetch(`${base}/submissions/${body.requestIdHex}`)).status).toBe(404);
+      }
+      expect(connection.sendRawTransaction).not.toHaveBeenCalled();
+      expect(await spent(base, server)).toBe("0");
+      expect(server.operations.snapshot()).toMatchObject({ retainedRecords: 0, unsettledLamports: "0" });
+      const [refused, config] = connection.simulateTransaction.mock.calls[0]!;
+      // The provider never receives a broadcastable transaction before its journal record exists.
+      expect(config).toMatchObject({ sigVerify: false, replaceRecentBlockhash: false, commitment: "confirmed" });
+      expect(refused.signatures.every(signature => signature.every(byte => byte === 0))).toBe(true);
+      connection.failSimulation(null);
+      expect((await post(base, "open-session", opening())).status).toBe(200);
+      const [simulated] = connection.simulateTransaction.mock.calls.at(-1)!;
+      const sent = Transaction.from(connection.sendRawTransaction.mock.calls[0]![0]);
+      expect(Buffer.from(simulated.message.serialize()).equals(sent.serializeMessage())).toBe(true);
+      expect(await spent(base, server)).toBe("30010000");
+    });
+  });
+
+  it("reserves nothing when simulation evidence is unavailable or stale, and the same request can retry", async () => {
+    const connection = rpc();
+    await withServer({ connection: connection as unknown as Connection }, async (base, server) => {
+      const body = { ...opening(), requestIdHex: randomBytes(32).toString("hex") };
+      connection.simulateTransaction.mockRejectedValueOnce(new Error("SYNTHETIC_PROVIDER_SECRET"));
+      const unavailable = await post(base, "open-session", body);
+      expect(unavailable.status).toBe(503); expect(await unavailable.text()).not.toContain("SYNTHETIC_PROVIDER_SECRET");
+      connection.simulateTransaction.mockResolvedValueOnce({ context: { slot: 1 }, value: { err: null, logs: [], unitsConsumed: 1 } });
+      expect((await post(base, "open-session", body)).status).toBe(503);
+      expect((await fetch(`${base}/submissions/${body.requestIdHex}`)).status).toBe(404);
+      expect(connection.sendRawTransaction).not.toHaveBeenCalled();
+      expect(await spent(base, server)).toBe("0");
+      expect((await post(base, "open-session", body)).status).toBe(200);
+      expect(connection.sendRawTransaction).toHaveBeenCalledOnce();
     });
   });
 

@@ -26,6 +26,7 @@ function world() {
     getGenesisHash: vi.fn(async () => scope.genesisHash),
     getSignatureStatuses: vi.fn(async () => ({ context: { slot: 50 }, value: [null] as any[] })),
     getBlockHeight: vi.fn(async () => 50),
+    simulateTransaction: vi.fn(async () => ({ context: { slot: 50 }, value: { err: null as unknown, logs: [] as string[] } })),
     sendRawTransaction: vi.fn(async (bytes: Uint8Array) => { throw new Error("SYNTHETIC_LOST_REPLY"); return bs58.encode(Transaction.from(bytes).signature!); }),
     confirmTransaction: vi.fn(async () => ({ value: { err: null } })),
   };
@@ -244,6 +245,34 @@ describe("durable relayer submissions", () => {
     w.chain.getGenesisHash.mockResolvedValue(Keypair.generate().publicKey.toBase58());
     await expect(service.submit(id, digest, w.make)).rejects.toThrow("chain mismatch");
     expect(w.chain.sendRawTransaction).not.toHaveBeenCalled(); expect(w.make).toHaveBeenCalledOnce();
+  });
+  it("prunes only settled records and frees capacity, never an unresolved packet or a restored journal", async () => {
+    const w = world(); let now = 1_800_000_000_000;
+    const j = new RelayerJournal(w.path, w.key, w.scope, 100000n, () => now, 2); cleanup.push(() => j.close());
+    const finalized = "0a".repeat(32), unresolved = "0b".repeat(32), later = "0c".repeat(32);
+    for (const requestId of [finalized, unresolved]) await w.submit(j).submit(requestId, digest, w.make);
+    await expect(w.submit(j).submit(later, digest, w.make)).rejects.toMatchObject({ status: 503 });
+    w.chain.getSignatureStatuses.mockResolvedValueOnce({ context: { slot: 52 }, value: [{ slot: 51, confirmationStatus: "finalized", err: null }] });
+    expect((await w.submit(j).status(finalized)).state).toBe("finalized");
+    now += 86_399_999;
+    expect(j.inspect(60).prunable).toEqual([]); // Still inside the 24-hour spending window.
+    now += 1;
+    expect(j.inspect(50).prunable).toEqual([]); // The balance read does not yet cover its slot.
+    expect(j.inspect(60)).toMatchObject({ prunable: [finalized], spent: 0n, unsettled: 10100n });
+    expect(j.prune([finalized, unresolved], 60)).toBe(1);
+    expect(j.get(finalized)).toBeUndefined(); expect(j.get(unresolved)?.packet).toBeDefined();
+    expect(j.inspect(60)).toMatchObject({ records: 1, spent: 0n, unsettled: 10100n, prunable: [] });
+    // An expired claim never saved a packet, so nothing can have been broadcast for it.
+    const claim = j.claim(later, digest); expect(claim.token).toBeDefined();
+    expect(j.inspect(60).prunable).toEqual([]);
+    now += 30_000;
+    expect(j.prune([later], 60)).toBe(1);
+    now += 30 * 86_400_000;
+    expect(j.inspect(1_000_000)).toMatchObject({ records: 1, prunable: [], unsettled: 10100n });
+    expect(j.prune([unresolved], 1_000_000)).toBe(0);
+    const audit = RelayerJournal.openForMaintenance(w.path, w.key, w.scope); cleanup.push(() => audit.close());
+    expect(() => audit.prune([unresolved], 1_000_000)).toThrow(/forbids/);
+    expect(() => j.prune(["bad"], 60)).toThrow(/retention/);
   });
   it("requires a fresh observation ID for snapshots, while canonical retries keep their identity", () => {
     const body = { wallet: "wallet", holding: "holding" };

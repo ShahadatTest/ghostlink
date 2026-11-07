@@ -122,8 +122,10 @@ export class RelayerOperations {
       this.#slot = slot; this.#rpc = true; this.#sampleAt = now;
       try {
         const budget = this.#options.journal.inspect(slot);
-        this.#spent = budget.spent.toString(); this.#unsettled = budget.unsettled.toString(); this.#records = budget.records;
-        this.#budget = budget.spent < this.#options.journal.dailyBudget; this.#recordCapacity = budget.records < budget.maximumRecords;
+        // Retention uses this same covered balance slot; settled records carry no spend or liquidity.
+        const records = budget.records - (budget.prunable.length ? this.#options.journal.prune(budget.prunable, slot) : 0);
+        this.#spent = budget.spent.toString(); this.#unsettled = budget.unsettled.toString(); this.#records = records;
+        this.#budget = budget.spent < this.#options.journal.dailyBudget; this.#recordCapacity = records < budget.maximumRecords;
         this.#balance = BigInt(lamports) >= BigInt(this.#options.minimumBalanceLamports) + budget.unsettled;
       } catch { this.#storage = false; this.#balance = false; }
     } catch {

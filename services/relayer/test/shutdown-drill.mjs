@@ -31,6 +31,7 @@ const rpc = createServer(async (req, res) => {
     enter(); await blocked;
     result = { context: { slot }, value: { blockhash: genesisHash, lastValidBlockHeight: 1000 } };
   } else if (call.method === "getFeeForMessage") result = { context: { slot }, value: 10000 };
+  else if (call.method === "simulateTransaction") result = { context: { slot }, value: { err: null, logs: [], unitsConsumed: 1000 } };
   else if (call.method === "getBlockHeight") result = slot;
   else if (call.method === "getSignatureStatuses") result = { context: { slot }, value: call.params[0].map(id => accepted.has(id)
     ? { slot, confirmations: 1, err: null, confirmationStatus: "confirmed" } : null) };
