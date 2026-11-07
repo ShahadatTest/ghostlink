@@ -3,8 +3,8 @@
 # fixture inputs once end-to-end, and regenerates the Rust verifying keys.
 #
 # Dev keys only: a real deployment uses the perpetual Powers of Tau and a
-# public phase-2 ceremony (build plan, section 5). Nothing this script
-# produces may ever reach mainnet.
+# public multi-party phase-2 ceremony. Whoever runs this script could forge
+# proofs for the keys it makes, so nothing it produces may reach mainnet.
 #
 # Run from the repo root on Linux/WSL: scripts/build-circuits.sh
 set -euo pipefail
@@ -36,9 +36,17 @@ if [ ! -f "$PTAU" ]; then
   rm -f "$BUILD/pot15_0000.ptau" "$BUILD/pot15_0001.ptau"
 fi
 
-echo "== groth16 setup (throwaway phase 2) =="
+echo "== groth16 setup with one random phase-2 contribution (throwaway) =="
 for c in login owner; do
-  $SNARKJS groth16 setup "$BUILD/$c.r1cs" "$PTAU" "$BUILD/${c}_dev.zkey" >/dev/null
+  $SNARKJS groth16 setup "$BUILD/$c.r1cs" "$PTAU" "$BUILD/${c}_0000.zkey" >/dev/null
+  # Never export the 0000 key: without a phase-2 contribution delta equals
+  # gamma, and anyone can forge proofs from the verifying key alone.
+  entropy="$(od -An -tx1 -N64 /dev/urandom | tr -d ' \n')"
+  $SNARKJS zkey contribute "$BUILD/${c}_0000.zkey" "$BUILD/${c}_dev.zkey" \
+    --name="ghostlink dev" -e="$entropy" >/dev/null
+  unset entropy
+  $SNARKJS zkey verify "$BUILD/$c.r1cs" "$PTAU" "$BUILD/${c}_dev.zkey" >/dev/null
+  rm -f "$BUILD/${c}_0000.zkey"
   $SNARKJS zkey export verificationkey "$BUILD/${c}_dev.zkey" "circuits/keys/${c}_vk.json"
 done
 

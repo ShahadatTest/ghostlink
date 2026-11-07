@@ -56,3 +56,40 @@ describe("verifying keys bind every public input", () => {
     });
   }
 });
+
+/**
+ * snarkjs fixes gamma to the G2 generator. `groth16 setup` alone leaves delta
+ * equal to it as well, and with gamma == delta anyone can forge a proof for
+ * any public inputs from the verifying key alone: A = alpha, B = beta,
+ * C = -(IC_0 + sum s_i * IC_i). One random phase-2 contribution
+ * (`zkey contribute`, see scripts/build-circuits.sh) makes the dev keys sound
+ * against everyone except whoever ran the setup. Production keys still need
+ * a public multi-party ceremony.
+ */
+describe("verifying keys come from a setup with a phase-2 contribution", () => {
+  for (const c of circuits) {
+    it(`${c.name}: delta differs from gamma`, () => {
+      const vk = load(c.vk);
+      expect(vk.vk_delta_2, "delta equals gamma: the setup had no phase-2 contribution").not.toEqual(vk.vk_gamma_2);
+    });
+
+    it(`${c.name}: the textbook forgery for a degenerate setup is rejected`, async () => {
+      const vk = load(c.vk);
+      const curve = await snarkjs.curves.getCurveFromName("bn128");
+      const { G1 } = curve;
+      const signals = (vk.IC as string[][]).slice(1).map((_, i) => String(1000 + i));
+      let vkX = G1.fromObject((vk.IC[0] as string[]).map(BigInt));
+      signals.forEach((s, i) => {
+        vkX = G1.add(vkX, G1.timesScalar(G1.fromObject((vk.IC[i + 1] as string[]).map(BigInt)), BigInt(s)));
+      });
+      const forged = {
+        pi_a: vk.vk_alpha_1,
+        pi_b: vk.vk_beta_2,
+        pi_c: (G1.toObject(G1.toAffine(G1.neg(vkX))) as bigint[]).map(String),
+        protocol: "groth16",
+        curve: "bn128",
+      };
+      expect(await snarkjs.groth16.verify(vk, signals, forged)).toBe(false);
+    });
+  }
+});

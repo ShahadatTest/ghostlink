@@ -1,4 +1,4 @@
-//! Cross-stack proof check (build plan, test layer 2): the proofs produced
+//! Cross-stack proof check: the proofs produced
 //! by snarkjs over the fixture inputs must verify through groth16-solana
 //! with the compiled-in verifying keys — the exact code path the programs
 //! run on-chain. Skips politely when scripts/build-circuits.sh has not
@@ -133,4 +133,16 @@ fn owner_proof_verifies_in_rust() {
     let mut bad = inputs;
     bad[2][31] ^= 1;
     assert!(verify_owner(&a, &b, &c, &bad).is_err());
+}
+
+/// snarkjs fixes gamma to the G2 generator, and `groth16 setup` without a
+/// phase-2 contribution leaves delta equal to it. With gamma == delta anyone
+/// can forge a proof for any public inputs from the verifying key alone, so
+/// the compiled-in keys must never have that shape.
+#[test]
+fn compiled_keys_come_from_a_setup_with_a_phase2_contribution() {
+    use ghostlink_verifier::vks::{login_vk, owner_vk};
+    for (name, vk) in [("login", &login_vk::VERIFYINGKEY), ("owner", &owner_vk::VERIFYINGKEY)] {
+        assert_ne!(vk.vk_delta_g2, vk.vk_gamma_g2, "{name}: delta equals gamma, so proofs are forgeable");
+    }
 }
