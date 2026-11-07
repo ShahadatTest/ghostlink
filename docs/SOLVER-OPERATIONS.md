@@ -21,6 +21,35 @@ Legacy compatible-schema journals without an instance marker can be read/backed 
 
 The pin detects missing/substituted state, not authentic rollback of the same journal. Supported backup restores retain the ID and add quarantine; trade authority still requires the existing per-pocket finalized owner-session recovery. Complete history reconciliation, aggregate budgets and coordinated cutover remain release gates. See [backup and restore](BACKUP-RESTORE.md).
 
+## Configuration
+
+These are all the variables `services/solver/src/index.ts` reads. Keep paths, keys and provider credentials outside source control.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `GHOSTLINK_SOLVER_KEYPAIR` | required | Solver keypair JSON. It pays fees and signs every fill. |
+| `SOLVER_GENESIS_HASH` | required | Independently approved chain identity. The RPC pool must report it; known public devnet/mainnet hashes are refused. |
+| `SOLVER_JOURNAL_PATH` | required | Existing encrypted SQLite journal on local durable storage. |
+| `SOLVER_JOURNAL_KEY_PATH` | required | File containing exactly 32 raw random bytes. |
+| `SOLVER_JOURNAL_ID` | required | Independently pinned 64-character lowercase hexadecimal journal instance ID. |
+| `RPC_ENDPOINTS_PATH` | unset | Private JSON file of one to four approved providers; overrides `RPC_URL`. See [RPC operations](RPC-OPERATIONS.md). |
+| `RPC_URL` | `http://127.0.0.1:8899` | Single approved provider when no endpoint file is configured. |
+| `PORT` | 8789 | Public HTTP listener. |
+| `OPERATIONS_PORT` | 18789 | Private metrics listener on `127.0.0.1`; must differ from `PORT`. |
+| `SOLVER_MIN_BALANCE_LAMPORTS` | 5,000,000 | Operational reserve required for readiness; must be at least `SOLVER_MAX_NETWORK_FEE_LAMPORTS`, otherwise startup fails. |
+| `SOLVER_MAX_COMPUTE_UNITS` | 1,400,000 | Compute ceiling for the complete fill, 1–1,400,000. The final limit is 120% of the simulated use, and a fill that needs more than the ceiling is refused. Checked when each intent is prepared, so an invalid value refuses every intent. |
+| `SOLVER_PRIORITY_MICRO_LAMPORTS` | 0 | Operator-fixed compute-unit price (u64 micro-lamports). Planners cannot add compute or priority instructions. The priority fee at the compute ceiling must fit within `SOLVER_MAX_NETWORK_FEE_LAMPORTS`. A non-integer value stops startup. |
+| `SOLVER_MAX_NETWORK_FEE_LAMPORTS` | 20,000 | Ceiling for the complete message's network fee (base plus priority). It excludes rent, token movements and protocol charges. Must be positive; a non-integer value stops startup. |
+| `PRICE_ACCOUNTS` | `{}` | JSON object mapping a mint (base58) to the Pyth `PriceUpdateV2` account (base58) the solver reads to value that leg. Each account must be owned by the Pyth receiver and fully verified. The program separately enforces the feeds pinned in the owner's policy. A mint without an entry is unpriced. Invalid JSON stops startup. |
+| `SOLVER_MAX_SPREAD_BPS` | 100 | How much more than the input's value the solver will deliver, integer 0–10,000. Checked for each priced intent, so an invalid value refuses every priced intent. |
+| `SOLVER_ALLOW_UNPRICED` | off | `1` permits an unpriced leg, but only with the intent-funded `jupiter-raydium-cp` router; the inventory router never qualifies. The owner's policy still applies on chain. |
+| `SOLVER_CREATE_POCKET_ATA` | off | `1` pays rent for a missing pocket output token account. Off by default because that rent later flows to the owner's home on sweep and can be farmed; the funding flow creates the account instead. |
+| `SOLVER_ROUTER` | `inventory` | `inventory` fills from the solver's own token inventory at the intent's terms. `jupiter-raydium-cp` is the experimental single approved Raydium CP hop described in [Jupiter routing](JUPITER-ROUTING.md). Any other value stops startup. |
+| `JUPITER_API_KEY_PATH` | required for Jupiter | Private text file of at most 512 bytes containing the Jupiter API key. |
+| `JUPITER_POOLS_PATH` | required for Jupiter | JSON array of 1–64 explicitly approved classic-SPL pools, at most 32 KiB. |
+| `JUPITER_SLIPPAGE_BPS` | 50 | Fixed quote tolerance for the Jupiter router, integer 0–500. |
+| `TRUST_PROXY` | off | `1` takes the per-IP quota address from the **rightmost** `X-Forwarded-For` entry. Enable only behind exactly one reverse proxy that you control and that overwrites the header; otherwise all clients behind a proxy share one address. |
+
 ## Endpoints and admission
 
 - Public `GET /health`: process liveness only. A provider outage does not require repeatedly restarting a healthy process.
@@ -41,7 +70,7 @@ Successful probes only establish these narrow dependency checks. They do not sca
 
 The shared HTTP router accepts at most 64 requests being read or handled and 512 connections by default. Its existing 64 KiB body limit and header/body timeouts still apply. Request overload returns 503 with `Retry-After: 1` and closes that connection; exceeding the connection limit can drop a connection before an HTTP response. A client disconnect does not free an active handler's slot until its work actually settles.
 
-The solver additionally allows eight intent/status operations in total and retains its per-IP/per-pocket request quotas. The shared rate limiter retains at most 10,000 identities per instance and refuses oversized keys. At capacity it refuses new identities instead of evicting live quotas. Expired entries are reclaimed in insertion order. The shared generic semaphore retains at most 64 waiting jobs by default. The relayer instead rejects overload immediately and reserves a slot for existing-operation reconciliation; see [relayer operations](RELAYER-OPERATIONS.md). These are per-process memory/admission bounds, not a distributed rate limit or a throughput SLA. A malicious client can still consume available capacity; configure the trusted front proxy and keep `TRUST_PROXY` disabled unless it overwrites forwarded addresses.
+The solver additionally allows eight intent/status operations in total and retains its per-IP quota (30 intent or status requests per minute) and per-pocket quota (10 intents per minute). Any client can sign an intent that names someone else's pocket with a key of its own, so the per-pocket quota is charged, and the pocket's durable authorization floor and recovery progress move, only after the pocket's current on-chain session authorizes the intent. The exceptions keep a refusal on record when it is attributable to the pocket's own session: a retry of an intent this journal already authorized, or an intent signed by the pocket's own session after it was revoked or expired, so a lagging provider cannot later show the older state. A rebroadcast of a saved pending intent over quota is skipped and its saved packet is still reconciled. The shared rate limiter retains at most 10,000 identities per instance and refuses oversized keys. At capacity it refuses new identities instead of evicting live quotas. Expired entries are reclaimed in insertion order. The shared generic semaphore retains at most 64 waiting jobs by default. The relayer instead rejects overload immediately and reserves a slot for existing-operation reconciliation; see [relayer operations](RELAYER-OPERATIONS.md). These are per-process memory/admission bounds, not a distributed rate limit or a throughput SLA. A malicious client can still consume available capacity; configure the trusted front proxy and keep `TRUST_PROXY` disabled unless it overwrites forwarded addresses.
 
 ## Monitoring and shutdown
 
@@ -65,7 +94,7 @@ On `SIGTERM` or `SIGINT`, the entry point closes new admission and stops accepti
 
 ## Evidence and remaining release work
 
-Focused tests cover slow request bodies, disconnected handlers, rate-limit cardinality, waiting-queue refusal, stalled/late probes, chain progress, fee reserve, authenticated journal write failures, SQLite lock contention, drain behavior, cached readiness and bounded private metrics. Actual initializer/startup processes verify refusal of missing/empty/substituted/legacy/incomplete-schema state and preserve packet identity, nonce ownership and authority floors across a valid restart. Backup/key rotation retain the pin and owner-recovery quarantine. A Unix child-process drill starts the real solver entry point, interrupts a request during an RPC read, disconnects its client, sends `SIGTERM`, verifies that work drains before exit, and reopens the pinned encrypted journal.
+Focused tests cover slow request bodies, disconnected handlers, rate-limit cardinality, intents signed by an unrelated key that cannot consume another pocket's quota or move its authorization floor or recovery progress, waiting-queue refusal, stalled/late probes, chain progress, fee reserve, authenticated journal write failures, SQLite lock contention, drain behavior, cached readiness and bounded private metrics. Actual initializer/startup processes verify refusal of missing/empty/substituted/legacy/incomplete-schema state and preserve packet identity, nonce ownership and authority floors across a valid restart. Backup/key rotation retain the pin and owner-recovery quarantine. A Unix child-process drill starts the real solver entry point, interrupts a request during an RPC read, disconnects its client, sends `SIGTERM`, verifies that work drains before exit, and reopens the pinned encrypted journal.
 
 Run `RPC_FAILOVER_DRILL=1 OPERATIONS_DRILL=1 bash scripts/localnet-e2e.sh` after building the programs, development circuits and E2E dependencies. The disposable validator drill takes both RPC proxies offline, observes readiness/admission refusal with liveness preserved, restores the providers, and completes owner consent, pocket creation, lost-acknowledgment recovery, settlement and owner withdrawal. It uses local development keys and synthetic Telegram authentication.
 

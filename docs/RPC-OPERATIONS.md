@@ -33,7 +33,8 @@ Use the same supported Node versions as the bot's SQLite store. This subpath is 
 | Entry point | Required chain identity | RPC behavior |
 | --- | --- | --- |
 | Solver | `SOLVER_GENESIS_HASH` | Approved pool for authorization, planning, signed submission and HTTP confirmation |
-| Relayer | `RELAYER_GENESIS_HASH` | Approved pool for registration/snapshot/session/owner-action preparation, signed sends and HTTP confirmation |
+| Relayer | `RELAYER_GENESIS_HASH` | Approved pool for registration/snapshot/session/owner-action preparation, pre-reservation simulation, signed sends and HTTP confirmation; the maintenance CLI's `reconcile` command uses the same pool for read-only finalized history |
+| Actions | `ACTIONS_GENESIS_HASH` | Approved pool for readiness probes, contextual pocket/mint/token-account reads and blockhashes for unsigned deposit transactions; it never signs or sends a transaction |
 | Hosted indexer | `INDEXER_GENESIS_HASH` | Approved pool for bounded finalized history; scoped state/key paths required; webhooks only trigger polling |
 | Watcher | `WATCHER_GENESIS_HASH` | Approved pool for event polling and timelock crank submission/confirmation; requires scoped encrypted `WATCHER_STATE_PATH`/`WATCHER_STATE_KEY_PATH`; funded execution also requires an encrypted journal and explicit cumulative fee cap |
 

@@ -2,6 +2,19 @@
 
 Status: localnet candidate. A disposable validator drill exercises owner rotation, settlement and sweep after restoring both databases, then rotates both storage keys while preserving orders and transaction identity. Automated multi-host cutover, production secret distribution/retirement, continuous backup orchestration and production disaster recovery remain release gates.
 
+## What each component supports
+
+| Component | Backup and restore | Storage-key rotation | After a restore |
+| --- | --- | --- | --- |
+| Bot key store (`@ghostlink/bot`) | Supported API: `BotKeyStore.backupTo` / `restoreBackup` (this page) | `rotateKey` | Earlier consents and their signing keys are retired; new consent and owner installation are required |
+| Solver journal | Supported API: `SubmissionJournal.backupTo` / `restoreBackup` / `openForMaintenance` (this page) | `rotateKey` | Every pocket is quarantined until a pinned, finalized owner session rotation |
+| Relayer journal | Supported operator CLI: `node services/relayer/dist/maintenance.js backup`, `restore`, `inspect`, `reconcile` and `rotate`; see [relayer backup and quarantined recovery](RELAYER-OPERATIONS.md#encrypted-backup-and-quarantined-recovery) | CLI `rotate` | Permanent quarantine: inventory and finalized-history reconciliation only; paid submission never resumes from restored state |
+| Indexer database | Not supported | Not supported | Restored state is refused. Initialize a new database and rebuild from complete finalized history; see [indexer operations](INDEXER-OPERATIONS.md) |
+| Watcher observation state and crank journal | Not supported | Not supported | Both stores refuse restore epochs. Preserve the existing files and WAL; coordinated backup reconciliation and key/payer migration are release gates; see [watcher operations](WATCHER-OPERATIONS.md) |
+| Actions service | Nothing to back up | Not applicable | Holds no durable state, keys or funds; keep only its configuration |
+
+The rest of this page covers the bot and solver. Copying live SQLite files is unsupported for every component.
+
 ## Archive and restore contract
 
 `BotKeyStore.backupTo(file)` and `SubmissionJournal.backupTo(file)` use SQLite's backup API, including committed WAL pages. Copying a live `.sqlite` file alone is unsupported. Each archive encrypts and authenticates the complete SQLite snapshot with AES-256-GCM and a purpose-specific namespace. Solver archives also bind genesis, Pocket program and solver identity. Retain the original 32-byte storage key in separate protected secret storage.

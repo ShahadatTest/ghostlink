@@ -76,6 +76,8 @@ atomically and swept home with the owner proof.
 
 ## Running services against devnet
 
+> Historical V1 configuration. The V2 services in this repository do not run against public devnet: their initializers, the Actions service and every fee-paying path refuse its genesis hash, and they refuse `RELAYER_BUDGET_PATH`, `PERSIST_PATH`, a non-finalized `INGEST_COMMITMENT` and `CLUSTER=devnet`. For V2 configuration, use the [relayer](RELAYER-OPERATIONS.md), [solver](SOLVER-OPERATIONS.md), [indexer](INDEXER-OPERATIONS.md), [watcher](WATCHER-OPERATIONS.md) and [Actions](ACTIONS-OPERATIONS.md) guides.
+
 Each service takes `RPC_URL=https://api.devnet.solana.com` (a Helius devnet URL is better behaved for the indexer's polling). Keys via `GHOSTLINK_RELAYER_KEYPAIR` / `GHOSTLINK_SOLVER_KEYPAIR`; never in the repo.
 
 | Service | Variable | Meaning |

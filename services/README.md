@@ -2,9 +2,9 @@
 
 GhostLink's reference services connect clients to the Solana programs. They carry availability, privacy, transaction-construction and operational responsibilities. On-chain checks do not make a service trustworthy in every respect, and reconstructing chain events does not reconstruct every off-chain request, notification acknowledgment or spending reservation.
 
-## Choose the correct version
+## Status
 
-The default branch is the published V1 development baseline. The [V2 authorization / PocketV3 candidate](https://github.com/Ghostlink-Labs/ghostlink/tree/codex/mainnet-sdk-foundation/services) contains newer durable-state, recovery and hosted-service controls. It is localnet-only and is not a drop-in upgrade for the preserved devnet deployment. Neither version is approved for real funds.
+These services implement the V2 authorization / PocketV3 protocol, with durable state, recovery and hosted-service controls. They are tested on disposable local validators. The state initializers, the Actions service and every fee-paying path refuse the public devnet and mainnet genesis hashes. They are not a drop-in upgrade for the preserved V1 devnet deployment described in the [devnet notes](../docs/DEVNET.md). Nothing here is approved for real funds.
 
 | Service | Responsibility | Boundary to understand |
 | --- | --- | --- |
@@ -18,17 +18,15 @@ The default branch is the published V1 development baseline. The [V2 authorizati
 
 ## Development and operations
 
-For the baseline, use the checked-in [setup guide](../docs/SETUP.md), [devnet notes](../docs/DEVNET.md) and version-matched service entry points. Older JSON/ephemeral state paths are development behavior, not a production recovery strategy.
+Start with the [setup guide](../docs/SETUP.md). Read each service's operations guide before configuring a hosted process:
 
-For the candidate, read its dedicated operations guides before configuring a hosted process:
+- [Indexer](../docs/INDEXER-OPERATIONS.md)
+- [Relayer](../docs/RELAYER-OPERATIONS.md)
+- [Solver](../docs/SOLVER-OPERATIONS.md)
+- [Watcher](../docs/WATCHER-OPERATIONS.md)
+- [Actions](../docs/ACTIONS-OPERATIONS.md)
+- [RPC](../docs/RPC-OPERATIONS.md) and [backup/restore](../docs/BACKUP-RESTORE.md)
 
-- [Indexer](https://github.com/Ghostlink-Labs/ghostlink/blob/codex/mainnet-sdk-foundation/docs/INDEXER-OPERATIONS.md)
-- [Relayer](https://github.com/Ghostlink-Labs/ghostlink/blob/codex/mainnet-sdk-foundation/docs/RELAYER-OPERATIONS.md)
-- [Solver](https://github.com/Ghostlink-Labs/ghostlink/blob/codex/mainnet-sdk-foundation/docs/SOLVER-OPERATIONS.md)
-- [Watcher](https://github.com/Ghostlink-Labs/ghostlink/blob/codex/mainnet-sdk-foundation/docs/WATCHER-OPERATIONS.md)
-- [Actions](https://github.com/Ghostlink-Labs/ghostlink/blob/codex/mainnet-sdk-foundation/docs/ACTIONS-OPERATIONS.md)
-- [RPC](https://github.com/Ghostlink-Labs/ghostlink/blob/codex/mainnet-sdk-foundation/docs/RPC-OPERATIONS.md) and [backup/restore](https://github.com/Ghostlink-Labs/ghostlink/blob/codex/mainnet-sdk-foundation/docs/BACKUP-RESTORE.md)
+Hosted entry points open only explicitly initialized, pinned existing state; JSON and in-memory state paths remain for local development and fixtures, not as a production recovery strategy. Do not delete or replace production state to bypass a startup error. Keep credentials, keys, databases, WAL files and backups outside source control, and independently reconcile uncertain history before resuming work. Each service has its own existing-state/identity requirements, restore restrictions, readiness and shutdown behavior; read each guide rather than applying one generic environment configuration.
 
-Do not delete or replace production state to bypass a startup error. Keep credentials, keys, databases, WAL files and backups outside source control, and independently reconcile uncertain history before resuming work. Candidate services have service-specific existing-state/identity requirements, restore restrictions, readiness and shutdown behavior; read each guide rather than applying one generic environment configuration.
-
-See the [project README](../README.md#versions-and-release-status) for version boundaries and the [candidate readiness plan](https://github.com/Ghostlink-Labs/ghostlink/blob/codex/mainnet-sdk-foundation/docs/MAINNET-READINESS.md) for outstanding release gates.
+See the [project status](../README.md#project-status) and the [mainnet readiness plan](../docs/MAINNET-READINESS.md) for outstanding release gates.
