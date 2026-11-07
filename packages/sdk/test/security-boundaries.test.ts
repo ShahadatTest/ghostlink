@@ -8,7 +8,7 @@ import {
 } from "@ghostlink/common";
 import {
   buildLoginInput, createGhostLinkWallet, createPasskeyFactor, deriveIdentity, derivePocket, fundingOptions,
-  GhostLink, normalizeDerToLowS, proveLogin, RelayerClient, softwareSession, sweepDigest,
+  GhostLink, normalizeDerToLowS, proveLogin, RelayerClient, softwareSession, sweepDigest, WitnessPendingError,
 } from "../src/index.js";
 import { verifyLogin } from "../../verify/src/index.js";
 
@@ -144,6 +144,21 @@ describe("proof and witness boundaries", () => {
     }
     const client = await GhostLink.init({ cluster: "localnet", indexer: "https://indexer.test", fetchFn: async () => Response.json({ from: 0, nextIndex: 2, leaves: ["1", "2"] }) });
     expect((await client.localWitness("registry", 1n, 2)).index).toBe(0);
+  });
+
+  it("reports a leaf whose root bucket has not ended as a retryable pending witness", async () => {
+    const pendingBody = { error: "not yet in a completed root bucket; retry after the slot", completesAfterSlot: "1349" };
+    const client = await GhostLink.init({ cluster: "localnet", indexer: "https://indexer.test",
+      fetchFn: async () => Response.json(pendingBody, { status: 404 }) });
+    const pending = await client.verifiedPath("census", 3, 1n).catch((error: unknown) => error);
+    expect(pending).toBeInstanceOf(WitnessPendingError);
+    expect((pending as WitnessPendingError).completesAfterSlot).toBe(1349n);
+    await expect(client.latestCensus(new Uint8Array(32), new Uint8Array(32))).rejects.toBeInstanceOf(WitnessPendingError);
+    for (const body of [{ error: "no such leaf" }, { completesAfterSlot: "-1" }, { completesAfterSlot: 5 }]) {
+      const missing = await GhostLink.init({ cluster: "localnet", indexer: "https://indexer.test",
+        fetchFn: async () => Response.json(body, { status: 404 }) });
+      await expect(missing.verifiedPath("census", 3, 1n)).rejects.toThrow(/HTTP 404/);
+    }
   });
 });
 

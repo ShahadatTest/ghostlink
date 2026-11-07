@@ -154,6 +154,8 @@ const session = await client.prove({ identity, witness, claim, currentSlot, expi
 - Omit `home`. The proof publishes an unsalted hash of `home`, and registered wallets are public, so a verifier could hash each wallet and identify the user. Without `home`, 32 zero bytes are bound. `prove` refuses a login-only proof whose `home` is the registered wallet.
 - Prefer `currentSlot` to `minSlot`. The proof publishes `min_slot`, and an exact census snapshot slot identifies that public snapshot. With `currentSlot`, `min_slot` is `currentSlot - claim.maxAgeSlots`.
 
+Witnesses come from completed root buckets. The programs keep one root per 150-slot bucket (about a minute), and a root becomes final only when its bucket ends, so the indexer serves a new registration or snapshot about a minute after it lands, plus finality. Until then `verifiedPath` and `latestCensus` throw `WitnessPendingError`; retry after its `completesAfterSlot`. `localWitness` rebuilds only the served leaves, so a leaf that recent is not found yet.
+
 ## Wallet Standard sign-in
 
 `registerGhostLinkWallet({ login })` announces a wallet with `standard:connect`, `standard:events` and a custom `ghostlink:signIn` feature. It has no transaction signing. It advertises `solana:localnet` by default and, like `GhostLink.init`, refuses other chains until V2 has a verified deployment.

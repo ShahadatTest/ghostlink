@@ -100,6 +100,19 @@ export interface SessionAuthorizationParams {
   policy: Policy;
 }
 
+/**
+ * The indexer holds this registration or snapshot, but its root-history
+ * bucket (150 slots, about a minute) has not ended, so no root covering it
+ * is final on chain yet. Retry once the chain is past `completesAfterSlot`;
+ * the indexer also waits for its own finality.
+ */
+export class WitnessPendingError extends Error {
+  constructor(readonly path: string, readonly completesAfterSlot: bigint) {
+    super(`${path}: not yet in a completed root bucket; retry after slot ${completesAfterSlot}`);
+    this.name = "WitnessPendingError";
+  }
+}
+
 export class GhostLink {
   readonly config: GhostLinkConfig;
   private readonly fetchFn: typeof fetch;
@@ -129,7 +142,14 @@ export class GhostLink {
 
   private async getJson<T>(base: string, path: string): Promise<T> {
     const res = await this.fetchFn(`${base}${path}`);
-    if (!res.ok) throw new Error(`${path}: HTTP ${res.status}`);
+    if (!res.ok) {
+      if (res.status === 404) {
+        const body = await res.json().catch(() => null) as { completesAfterSlot?: unknown } | null;
+        const slot = body?.completesAfterSlot;
+        if (typeof slot === "string" && /^(0|[1-9][0-9]{0,19})$/.test(slot)) throw new WitnessPendingError(path, BigInt(slot));
+      }
+      throw new Error(`${path}: HTTP ${res.status}`);
+    }
     return (await res.json()) as T;
   }
 
@@ -150,8 +170,10 @@ export class GhostLink {
   /**
    * Fetches a Merkle path and checks that it is well-formed and hashes to
    * the served root. Integrity against the chain is settled on-chain: the
-   * pocket only accepts roots from the 128-root ring, so a lying indexer
-   * can waste a proof but never forge one.
+   * pocket only accepts roots from the programs' 128-entry root rings, so
+   * a lying indexer can waste a proof but never forge one. The indexer
+   * serves paths against the newest completed root bucket only; a leaf
+   * whose bucket has not ended throws `WitnessPendingError`.
    */
   async verifiedPath(
     tree: "registry" | "census",
@@ -182,7 +204,10 @@ export class GhostLink {
    * downloads the whole tree (pages of leaves), rebuilds it locally and
    * reads the path off it. The request reveals nothing about the wallet
    * — the privacy-preserving choice while the tree is small enough
-   * (default cap 50,000 leaves; a 26-hash append per leaf in JS).
+   * (default cap 50,000 leaves; a 26-hash append per leaf in JS). The
+   * indexer lists only leaves of completed root buckets, so the rebuilt
+   * root is one the programs keep; a leaf from the last minute is not
+   * listed yet.
    */
   async localWitness(
     tree: "registry" | "census",
