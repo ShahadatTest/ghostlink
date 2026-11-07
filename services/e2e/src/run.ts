@@ -273,7 +273,8 @@ async function main() {
       const { proof, publicSignals } = await snarkjs.groth16.fullProve(
         input,
         join(ROOT, `circuits/build/${circuit}_js/${circuit}.wasm`),
-        join(ROOT, `circuits/build/${circuit}_dev.zkey`),
+        // GHOSTLINK_ZKEY_SUFFIX=final after scripts/ceremony/install.sh.
+        join(ROOT, `circuits/build/${circuit}_${process.env.GHOSTLINK_ZKEY_SUFFIX ?? "dev"}.zkey`),
       );
       return { proof: proof as object, publicSignals: publicSignals as string[] };
     },

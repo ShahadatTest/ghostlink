@@ -322,7 +322,8 @@ describe("webauthn signature normalization", () => {
 
 describe("end-to-end prove and verify (needs built circuits)", () => {
   const wasm = join(root, "circuits/build/login_js/login.wasm");
-  const zkey = join(root, "circuits/build/login_dev.zkey");
+  // GHOSTLINK_ZKEY_SUFFIX=final after scripts/ceremony/install.sh.
+  const zkey = join(root, `circuits/build/login_${process.env.GHOSTLINK_ZKEY_SUFFIX ?? "dev"}.zkey`);
   it.skipIf(!existsSync(wasm) || !existsSync(zkey))(
     "proves the fixture inputs through snarkjs",
     async () => {

@@ -1,8 +1,9 @@
 /**
- * Proves the fixture inputs with the dev zkeys and verifies both proofs —
- * the end-to-end check that circuit, keys and fixtures agree. Also writes
- * the proofs and public signals to circuits/keys/ so the Rust verifier
- * tests can check the exact same proofs on the program side.
+ * Proves the fixture inputs with the proving keys in circuits/build and
+ * verifies both proofs — the end-to-end check that circuit, keys and
+ * fixtures agree. Also writes the proofs and public signals to
+ * circuits/keys/ so the Rust verifier tests can check the exact same proofs
+ * on the program side.
  */
 import * as snarkjs from "snarkjs";
 import { createHash } from "node:crypto";
@@ -12,6 +13,11 @@ import { fileURLToPath } from "node:url";
 import bs58 from "bs58";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+// "dev" for the throwaway keys of scripts/build-circuits.sh, "final" for
+// keys installed from a ceremony by scripts/ceremony/install.sh.
+const ZKEY_SUFFIX = process.env.GHOSTLINK_ZKEY_SUFFIX ?? "dev";
+if (!["dev", "final"].includes(ZKEY_SUFFIX)) throw new Error(`GHOSTLINK_ZKEY_SUFFIX must be dev or final, not ${ZKEY_SUFFIX}`);
+const zkeyPath = (name) => join(root, `circuits/build/${name}_${ZKEY_SUFFIX}.zkey`);
 const vectors = JSON.parse(readFileSync(join(root, "packages/common/fixtures/vectors.json"), "utf8"));
 
 mkdirSync(join(root, "circuits/keys"), { recursive: true });
@@ -20,7 +26,7 @@ for (const name of ["login", "owner"]) {
   const fx = vectors.circuits[name];
   const input = { ...fx.public, ...fx.private };
   const wasm = join(root, `circuits/build/${name}_js/${name}.wasm`);
-  const zkey = join(root, `circuits/build/${name}_dev.zkey`);
+  const zkey = zkeyPath(name);
 
   const { proof, publicSignals } = await snarkjs.groth16.fullProve(input, wasm, zkey);
   const vk = JSON.parse(readFileSync(join(root, `circuits/keys/${name}_vk.json`), "utf8"));
@@ -81,7 +87,7 @@ const actionSpecs = {
 
 const ownerFx = vectors.circuits.owner;
 const ownerWasm = join(root, "circuits/build/owner_js/owner.wasm");
-const ownerZkey = join(root, "circuits/build/owner_dev.zkey");
+const ownerZkey = zkeyPath("owner");
 const ownerVk = JSON.parse(readFileSync(join(root, "circuits/keys/owner_vk.json"), "utf8"));
 const out = { newHome: newHome.toString("hex") };
 for (const [name, [tag, nonce]] of Object.entries(actionSpecs)) {
@@ -137,7 +143,7 @@ const p256Input = {
 const { proof: p256Proof, publicSignals: p256Signals } = await snarkjs.groth16.fullProve(
   p256Input,
   join(root, "circuits/build/login_js/login.wasm"),
-  join(root, "circuits/build/login_dev.zkey"),
+  zkeyPath("login"),
 );
 const loginVk = JSON.parse(readFileSync(join(root, "circuits/keys/login_vk.json"), "utf8"));
 if (!(await snarkjs.groth16.verify(loginVk, p256Signals, p256Proof))) {
@@ -167,7 +173,7 @@ for (const [name, context] of [
 ]) {
   const input = { ...loginFx.public, ...loginFx.private, authorization_context: context.toString() };
   const { proof, publicSignals } = await snarkjs.groth16.fullProve(input,
-    join(root, "circuits/build/login_js/login.wasm"), join(root, "circuits/build/login_dev.zkey"));
+    join(root, "circuits/build/login_js/login.wasm"), zkeyPath("login"));
   if (!(await snarkjs.groth16.verify(loginVk, publicSignals, proof))) throw new Error(`${name} proof invalid`);
   const bytes = common.proofToBytes(proof);
   writeFileSync(join(root, `circuits/keys/login_${name}_proof.json`), JSON.stringify({ proof, publicSignals,
@@ -184,7 +190,7 @@ const renewed = { ...loginFx.public, ...loginFx.private, claim_holdings: "0",
   session_commitment: common.sessionCommitment(common.hexToBytes(vectors.identity.sessionPubkey), renewedExpiry).toString(),
   authorization_context: common.pocketAuthorizationContext(specPolicy, 0).toString() };
 const renewProof = await snarkjs.groth16.fullProve(renewed,
-  join(root, "circuits/build/login_js/login.wasm"), join(root, "circuits/build/login_dev.zkey"));
+  join(root, "circuits/build/login_js/login.wasm"), zkeyPath("login"));
 if (!(await snarkjs.groth16.verify(loginVk, renewProof.publicSignals, renewProof.proof))) throw new Error("renewal proof invalid");
 writeFileSync(join(root, "circuits/keys/login_speculative_renew_proof.json"), JSON.stringify(renewProof, null, 2) + "\n");
 
