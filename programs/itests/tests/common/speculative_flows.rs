@@ -38,9 +38,10 @@ fn exit(w: &mut FillWorld, nonce: u64, quantity: u64, minimum: u64, delivered: u
     instructions
 }
 
+/// (speculative buys recorded in the rolling window, first position's quantity, its cost).
 fn ledger(w: &FillWorld) -> (u64, u64, u64) {
     let data = w.ctx.h.account_data(&w.ctx.pocket).unwrap();
-    assert_eq!(data.len(), 3293);
+    assert_eq!(data.len(), 3685);
     assert_eq!(&data[..8], &sha(&[b"account:PocketV3"])[..8]);
     let policy_end = 146 + borsh::to_vec(&w.ctx.policy).unwrap().len();
     let pending = if data[policy_end] == 0 { 1 } else {
@@ -48,9 +49,12 @@ fn ledger(w: &FillWorld) -> (u64, u64, u64) {
         assert_eq!(data[policy_end + 1], 1);
         2 + borsh::to_vec(&feeds_policy()).unwrap().len() + 8
     };
-    let offset = policy_end + pending + 297;
+    // Spending window (newest bucket + 25 hourly amounts), nonce bitmap, bump,
+    // max session expiry, nonce base and owner action nonce precede the ledger.
+    let offset = policy_end + pending + 208 + 256 + 1 + 8 + 8 + 8;
     let value = |i: usize| u64::from_le_bytes(data[i..i + 8].try_into().unwrap());
-    (value(offset), value(offset + 8 + 96), value(offset + 8 + 104))
+    let bought = (0..25).map(|i| value(offset + 8 + 8 * i)).sum();
+    (bought, value(offset + 208 + 96), value(offset + 208 + 104))
 }
 
 fn refused_without_movement(w: &mut FillWorld, tx: &[Instruction], expected: &str) {
@@ -149,7 +153,8 @@ fn renewal_and_day_roll_keep_exposure_but_reset_only_daily_spending() {
     let solver = w.solver.clone();
     let tx = buy(&w, 7, 10_000_000, 100, 100);
     w.ctx.h.send(&tx, &[&solver]).unwrap();
-    set_clock(&mut w.ctx.h, FILL_SLOT + TIMELOCK_SLOTS);
+    // A rolling day: the first buy leaves the window with its hour, 25 hours later.
+    set_clock(&mut w.ctx.h, FILL_SLOT + TIMELOCK_SLOTS + 9_000);
     let mut args = open_session_args(&w.ctx, "circuits/keys/login_speculative_renew_proof.json", 0,
         ed25519_key33(&w.ctx.session), false);
     args.session_expiry_slot = EXPIRY_SLOT + TIMELOCK_SLOTS;

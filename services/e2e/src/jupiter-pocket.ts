@@ -1,6 +1,7 @@
 /** Full Pocket settlement against cloned binaries. Never used outside the guarded localnet harness. */
 import { PublicKey, SystemProgram, type Connection, type Keypair, type TransactionInstruction } from "@solana/web3.js";
-import { ataAddress, createAtaIdempotentIx, fillStatePda, isPocketNonceUsed, readPocketAccount } from "@ghostlink/service-kit";
+import { ataAddress, createAtaIdempotentIx, fillStatePda, isPocketNonceUsed, readPocketAccount, rollingWindowTotal,
+  type RollingWindowState } from "@ghostlink/service-kit";
 import type { BotConsent, BotIntentParams } from "@ghostlink/bot";
 import type { IntentSubmission } from "@ghostlink/common";
 import type { startBotFixture } from "./bot-session.js";
@@ -32,9 +33,10 @@ export async function exerciseJupiterPocket(x: {
   console.log("✓ Pocket buy through real Jupiter/Raydium programs, lost acknowledgment, durable retry and exact nonce consumption");
   const buyState = readPocketAccount(await state());
   const position = buyState.speculativePositions[0];
+  const boughtInWindow = rollingWindowTotal(buyState.speculativeBuys, BigInt(await c.getSlot("confirmed")));
   if (speculative && (!position || buyState.speculativePositions.length !== 1 || position.quantity !== received ||
     !position.mint.equals(output) || !position.baseMint.equals(input) || !position.tokenAccount.equals(ataAddress(pocket, output)) ||
-    position.costUsdE6 <= 0n || position.costUsdE6 !== buyState.speculativeBoughtTodayUsdE6)) {
+    position.costUsdE6 <= 0n || position.costUsdE6 !== boughtInWindow)) {
     throw new Error("speculative buy did not record exact acquired quantity and historical cost");
   }
 
@@ -47,10 +49,13 @@ export async function exerciseJupiterPocket(x: {
   console.log("✓ Pocket sell returned wrapped SOL; a different durable nonce settled exactly once");
   if (speculative) {
     const after = readPocketAccount(await state()), remaining = after.speculativePositions[0];
+    // An exit records nothing in either rolling window: it neither buys nor spends priced value.
+    const sameWindow = (a: RollingWindowState, b: RollingWindowState) =>
+      a.latestBucket === b.latestBucket && a.amounts.every((amount, i) => amount === b.amounts[i]);
     if (!position || !remaining || remaining.quantity !== received - sell.inMax ||
       remaining.costUsdE6 !== position.costUsdE6 - position.costUsdE6 * sell.inMax / received ||
-      after.speculativeBoughtTodayUsdE6 !== buyState.speculativeBoughtTodayUsdE6 ||
-      after.spentTodayUsdE6 !== buyState.spentTodayUsdE6) throw new Error("speculative exit accounting differs from settled quantity");
+      !sameWindow(after.speculativeBuys, buyState.speculativeBuys) ||
+      !sameWindow(after.spending, buyState.spending)) throw new Error("speculative exit accounting differs from settled quantity");
     console.log("✓ Owner-approved unpriced buy and partial exit; exact cost release, unchanged daily spend, no asset oracle");
   }
 

@@ -2,6 +2,7 @@
 //! acquisition cost, never a market price or a minimum permitted exit value.
 use anchor_lang::prelude::*;
 use crate::state::PocketError;
+use crate::window::RollingWindow;
 
 pub const MAX_POSITIONS: usize = 8;
 
@@ -26,8 +27,14 @@ pub struct Position {
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default, Debug, InitSpace)]
 pub struct SpeculativeLedger {
-    pub bought_today_usd_e6: u64,
+    /// Acquisition spending (USD e6) against the daily buy cap, over a rolling day.
+    pub buys: RollingWindow,
     pub positions: [Position; MAX_POSITIONS],
+}
+
+/// PocketV3 boxes its ledger (see state.rs); the space is the ledger's own.
+impl anchor_lang::Space for Box<SpeculativeLedger> {
+    const INIT_SPACE: usize = SpeculativeLedger::INIT_SPACE;
 }
 
 impl SpeculativeLedger {
@@ -43,11 +50,9 @@ impl SpeculativeLedger {
     /// Read-only preflight. State changes only after the measured output is
     /// known, inside fill_end; any later error rolls back the entire trade.
     pub fn check_buy(&self, policy: &SpeculativePolicy, mint: Pubkey, base: Pubkey,
-        token_account: Pubkey, cost: u64) -> Result<usize> {
+        token_account: Pubkey, cost: u64, now_slot: u64) -> Result<usize> {
         require!(cost > 0 && policy.base_mints.contains(&base), PocketError::SpeculativeViolation);
-        require!(self.bought_today_usd_e6.checked_add(cost)
-            .ok_or(error!(PocketError::Overflow))? <= policy.daily_buy_cap_usd_e6,
-            PocketError::SpeculativeDailyCap);
+        require!(self.buys.fits(now_slot, cost, policy.daily_buy_cap_usd_e6)?, PocketError::SpeculativeDailyCap);
         require!(self.cost_exposure()?.checked_add(cost)
             .ok_or(error!(PocketError::Overflow))? <= policy.max_cost_exposure_usd_e6,
             PocketError::SpeculativeExposureCap);
@@ -62,16 +67,15 @@ impl SpeculativeLedger {
     }
 
     pub fn acquire(&mut self, policy: &SpeculativePolicy, mint: Pubkey, base: Pubkey,
-        token_account: Pubkey, quantity: u64, cost: u64) -> Result<()> {
+        token_account: Pubkey, quantity: u64, cost: u64, now_slot: u64) -> Result<()> {
         require!(quantity > 0, PocketError::SpeculativeViolation);
-        let i = self.check_buy(policy, mint, base, token_account, cost)?;
+        let i = self.check_buy(policy, mint, base, token_account, cost, now_slot)?;
         let previous = self.positions[i];
         let position = Position { mint, base_mint: base, token_account,
             quantity: previous.quantity.checked_add(quantity).ok_or(error!(PocketError::Overflow))?,
             cost_usd_e6: previous.cost_usd_e6.checked_add(cost).ok_or(error!(PocketError::Overflow))? };
-        let bought = self.bought_today_usd_e6.checked_add(cost).ok_or(error!(PocketError::Overflow))?;
+        self.buys.record(now_slot, cost)?;
         self.positions[i] = position;
-        self.bought_today_usd_e6 = bought;
         Ok(())
     }
 
@@ -116,6 +120,10 @@ impl SpeculativeLedger {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::SLOTS_PER_DAY;
+    use crate::window::BUCKET_SLOTS;
+
+    const NOW: u64 = 123_456_800;
 
     fn policy(base: Pubkey) -> SpeculativePolicy {
         SpeculativePolicy { daily_buy_cap_usd_e6: 30, max_cost_exposure_usd_e6: 20,
@@ -127,25 +135,27 @@ mod tests {
         let (mint, base, account) = (Pubkey::new_unique(), Pubkey::new_unique(), Pubkey::new_unique());
         let p = policy(base);
         let mut l = SpeculativeLedger::default();
-        l.acquire(&p, mint, base, account, 100, 20).unwrap();
-        assert!(l.check_buy(&p, mint, base, account, 1).is_err());
+        l.acquire(&p, mint, base, account, 100, 20, NOW).unwrap();
+        assert!(l.check_buy(&p, mint, base, account, 1, NOW).is_err());
         assert!(l.check_exit(mint, base, account, 101).is_err()); // donations don't expand permission
         assert!(l.check_exit(mint, Pubkey::new_unique(), account, 1).is_err());
         assert!(l.check_exit(mint, base, Pubkey::new_unique(), 1).is_err());
         assert_eq!(l.exit(mint, base, account, 50).unwrap(), 10);
-        assert!(l.check_buy(&p, mint, base, Pubkey::new_unique(), 1).is_err());
-        l.acquire(&p, mint, base, account, 50, 10).unwrap();
+        assert!(l.check_buy(&p, mint, base, Pubkey::new_unique(), 1, NOW).is_err());
+        l.acquire(&p, mint, base, account, 50, 10, NOW).unwrap();
         assert_eq!(l.exit(mint, base, account, 100).unwrap(), 20);
         assert!(!l.has_positions());
-        assert!(l.check_buy(&p, mint, base, account, 1).is_err()); // daily budget never refunded
-        l.bought_today_usd_e6 = 0; // only roll_day does this in the program
-        l.acquire(&p, mint, base, account, 1, 1).unwrap();
+        assert!(l.check_buy(&p, mint, base, account, 1, NOW).is_err()); // daily budget never refunded
+        // Only time returns it: a day later the purchase may still count, 25 hours later it never does.
+        assert!(l.check_buy(&p, mint, base, account, 1, NOW + SLOTS_PER_DAY - 1).is_err());
+        let later = NOW + SLOTS_PER_DAY + BUCKET_SLOTS;
+        l.acquire(&p, mint, base, account, 1, 1, later).unwrap();
         l.swept(Pubkey::new_unique());
         assert_eq!(l.cost_exposure().unwrap(), 1);
         l.swept(account);
         assert!(!l.has_positions());
         assert!(l.check_exit(mint, base, account, 1).is_err()); // redeposit cannot resurrect permission
-        assert_eq!(l.bought_today_usd_e6, 1);
+        assert_eq!(l.buys.total(later).unwrap(), 1);
     }
 
     #[test]
@@ -153,7 +163,7 @@ mod tests {
         let (mint, base, account) = (Pubkey::new_unique(), Pubkey::new_unique(), Pubkey::new_unique());
         let p = policy(base);
         let mut l = SpeculativeLedger::default();
-        l.acquire(&p, mint, base, account, 5, 3).unwrap();
+        l.acquire(&p, mint, base, account, 5, 3, NOW).unwrap();
         assert_eq!(l.take(Pubkey::new_unique()), None);
         assert_eq!(l.cost_exposure().unwrap(), 3);
         assert_eq!(l.take(account), Some(Position { mint, base_mint: base, token_account: account,
@@ -169,8 +179,8 @@ mod tests {
             let p = SpeculativePolicy { daily_buy_cap_usd_e6: u64::MAX,
                 max_cost_exposure_usd_e6: u64::MAX, ..policy(base) };
             let mut l = SpeculativeLedger::default();
-            l.acquire(&p, mint, base, account, quantity, cost).unwrap();
-            assert!(l.check_buy(&p, mint, base, account, u64::MAX).is_err());
+            l.acquire(&p, mint, base, account, quantity, cost, NOW).unwrap();
+            assert!(l.check_buy(&p, mint, base, account, u64::MAX, NOW).is_err());
             let sold = quantity / 2;
             let released = l.exit(mint, base, account, sold).unwrap();
             assert_eq!(released as u128, cost as u128 * sold as u128 / quantity as u128);
@@ -185,11 +195,11 @@ mod tests {
         let base = Pubkey::new_unique();
         let p = policy(base);
         let mut l = SpeculativeLedger::default();
-        for _ in 0..2 { l.acquire(&p, Pubkey::new_unique(), base, Pubkey::new_unique(), 1, 1).unwrap(); }
+        for _ in 0..2 { l.acquire(&p, Pubkey::new_unique(), base, Pubkey::new_unique(), 1, 1, NOW).unwrap(); }
         let before = l.try_to_vec().unwrap();
-        assert!(l.acquire(&p, Pubkey::new_unique(), base, Pubkey::new_unique(), 1, 1).is_err());
+        assert!(l.acquire(&p, Pubkey::new_unique(), base, Pubkey::new_unique(), 1, 1, NOW).is_err());
         assert_eq!(before, l.try_to_vec().unwrap());
         // Account readers must reject old allocations, even their zero padding.
-        assert_eq!(8 + crate::state::PocketV3::INIT_SPACE, 3293);
+        assert_eq!(8 + crate::state::PocketV3::INIT_SPACE, 3685);
     }
 }

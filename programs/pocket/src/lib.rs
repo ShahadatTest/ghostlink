@@ -43,6 +43,7 @@ pub mod precompile;
 pub mod state;
 pub mod speculative;
 pub mod token;
+pub mod window;
 
 use oracle::{read_price, usd_e6};
 use precompile::{check_session_signature, WebauthnData};
@@ -232,9 +233,8 @@ pub mod ghostlink_pocket {
             pocket.home = args.home;
             pocket.policy = policy;
             pocket.pending = None;
-            pocket.day_start_slot = clock.slot;
-            pocket.spent_today_usd_e6 = 0;
-            pocket.speculative_ledger = speculative::SpeculativeLedger::default();
+            pocket.spending = window::RollingWindow::default();
+            pocket.speculative_ledger = Box::default();
             pocket.nonce_bitmap = [0u8; NONCE_BITMAP_BYTES];
             pocket.nonce_base = 0;
             pocket.owner_action_nonce = 0;
@@ -352,10 +352,10 @@ pub mod ghostlink_pocket {
             let price = read_price(&ctx.accounts.in_price.to_account_info(), &feed.feed_id, &clock)?;
             usd_e6(args.in_max, feed.decimals, &price)?
         } else { 0 };
-        pocket.roll_day(clock.slot);
+        // A rolling day: everything spent in the current hour and the 24
+        // before it, plus this fill, must stay within the cap (window.rs).
         if mode != 2 {
-            require!(pocket.spent_today_usd_e6.checked_add(in_value_usd_e6)
-                .ok_or(error!(PocketError::Overflow))? <= pocket.policy.daily_cap_usd_e6,
+            require!(pocket.spending.fits(clock.slot, in_value_usd_e6, pocket.policy.daily_cap_usd_e6)?,
                 PocketError::DailyCapExceeded);
         }
         let passkey_signed = pocket.session_kind == SESSION_KIND_P256;
@@ -378,7 +378,7 @@ pub mod ghostlink_pocket {
                 require!(parse_mint(&ctx.accounts.out_mint)?.freeze_authority.is_none(),
                     PocketError::FreezableMint);
                 pocket.speculative_ledger.check_buy(spec, args.out_mint, args.in_mint,
-                    ctx.accounts.pocket_out_account.key(), in_value_usd_e6)?;
+                    ctx.accounts.pocket_out_account.key(), in_value_usd_e6, clock.slot)?;
             } else {
                 require!(spec.base_mints.contains(&args.out_mint), PocketError::SpeculativeViolation);
                 pocket.speculative_ledger.check_exit(args.in_mint, args.out_mint,
@@ -471,17 +471,17 @@ pub mod ghostlink_pocket {
         if fill.mode == 1 {
             let spec = pocket.policy.speculative.clone().ok_or(error!(PocketError::NoOracleViolation))?;
             pocket.speculative_ledger.acquire(&spec, args.out_mint, args.in_mint,
-                fill.out_account, received, fill.in_value_usd_e6)?;
+                fill.out_account, received, fill.in_value_usd_e6, clock.slot)?;
         } else if fill.mode == 2 {
             released_cost_usd_e6 = pocket.speculative_ledger.exit(args.in_mint, args.out_mint,
                 fill.in_account, args.in_max)?;
         }
 
         pocket.mark_nonce(args.nonce);
-        pocket.spent_today_usd_e6 = pocket
-            .spent_today_usd_e6
-            .checked_add(fill.in_value_usd_e6)
-            .ok_or(error!(PocketError::Overflow))?;
+        // Exits carry no priced input and leave the window untouched.
+        if fill.in_value_usd_e6 > 0 {
+            pocket.spending.record(clock.slot, fill.in_value_usd_e6)?;
+        }
 
         emit!(Filled {
             pocket: pocket_key,

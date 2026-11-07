@@ -3,9 +3,10 @@
 use anchor_lang::prelude::*;
 use solana_sha256_hasher::hashv;
 use crate::speculative::{SpeculativePolicy, SpeculativeLedger, MAX_POSITIONS};
+use crate::window::RollingWindow;
 
 /// 24 hours in slots (400 ms slots), used for the change timelock and the
-/// daily spending window.
+/// rolling daily spending windows.
 pub const TIMELOCK_SLOTS: u64 = 216_000;
 pub const SLOTS_PER_DAY: u64 = 216_000;
 
@@ -135,8 +136,8 @@ pub struct PocketV3 {
     pub session_expiry_slot: u64,
     pub policy: Policy,
     pub pending: Option<PendingChange>,
-    pub day_start_slot: u64,
-    pub spent_today_usd_e6: u64,
+    /// Priced spending (USD e6) against the daily cap, over a rolling day.
+    pub spending: RollingWindow,
     pub nonce_bitmap: [u8; NONCE_BITMAP_BYTES],
     pub bump: u8,
     /// The latest expiry any session of this pocket was ever opened with.
@@ -148,7 +149,9 @@ pub struct PocketV3 {
     pub nonce_base: u64,
     /// Freshness for every owner/session administrative authorization.
     pub owner_action_nonce: u64,
-    pub speculative_ledger: SpeculativeLedger,
+    /// On the heap: Anchor holds this struct on the 4 KiB SBF stack while
+    /// loading the account. Borsh encodes a Box exactly like its contents.
+    pub speculative_ledger: Box<SpeculativeLedger>,
 }
 
 impl PocketV3 {
@@ -164,15 +167,6 @@ impl PocketV3 {
 
     pub fn mark_nonce(&mut self, nonce: u64) {
         nonce_window::mark(&mut self.nonce_base, &mut self.nonce_bitmap, nonce)
-    }
-
-    /// Roll the daily spending window forward if a day has passed.
-    pub fn roll_day(&mut self, now_slot: u64) {
-        if now_slot >= self.day_start_slot.saturating_add(SLOTS_PER_DAY) {
-            self.day_start_slot = now_slot;
-            self.spent_today_usd_e6 = 0;
-            self.speculative_ledger.bought_today_usd_e6 = 0;
-        }
     }
 
     /// The 32 bytes that enter the session commitment: the Ed25519 key

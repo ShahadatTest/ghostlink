@@ -25,6 +25,7 @@ const BAD_ORACLE: &str = "Custom(6031)";
 const STALE_ORACLE: &str = "Custom(6032)";
 const BAD_TOKEN_ACCOUNT: &str = "Custom(6033)";
 const POSITIONS_OPEN: &str = "Custom(6046)";
+const DAILY_CAP_EXCEEDED: &str = "Custom(6026)";
 const FREEZABLE_MINT: &str = "Custom(6047)";
 const ORACLE_NOT_CANONICAL: &str = "Custom(6048)";
 const ORACLE_CONFIDENCE: &str = "Custom(6049)";
@@ -299,6 +300,7 @@ fn owner_action_nonce(w: &World) -> u64 {
 /// pending change (programs/pocket/src/state.rs field order).
 struct Layout {
     policy: usize,
+    spending: usize,
     owner_action_nonce: usize,
     positions: usize,
 }
@@ -326,15 +328,18 @@ fn layout(data: &[u8]) -> Layout {
         (1, 1) => 2 + policy_len(data, off + 2) + 8,
         tags => panic!("unexpected pending change tags {tags:?}"),
     };
-    off += 8 + 8; // daily window start and spending
+    let spending = off;
+    off += WINDOW; // the rolling spending window
     off += NONCE_BITMAP + 1 + 8 + 8; // nonce bitmap, bump, max session expiry, nonce base
     let owner_action_nonce = off;
     off += 8;
-    let positions = off + 8; // after the speculative daily buy total
-    Layout { policy, owner_action_nonce, positions }
+    let positions = off + WINDOW; // after the speculative buys window
+    Layout { policy, spending, owner_action_nonce, positions }
 }
 
 const NONCE_BITMAP: usize = 256;
+/// A RollingWindow: newest bucket index and 25 hourly amounts.
+const WINDOW: usize = 8 + 25 * 8;
 
 /// Open speculative positions as (mint, token account, quantity, cost).
 fn positions(w: &World) -> Vec<([u8; 32], Pubkey, u64, u64)> {
@@ -611,4 +616,83 @@ fn oracle_prices_come_only_from_the_fresh_confident_sponsored_account() {
     let legs = priced(&w);
     fill(&mut w, &args, &legs, 160_000_000).expect("a fresh, confident sponsored price");
     assert_eq!(w.h.token_balance(&w.pocket_sol), Some(160_000_000));
+}
+
+// ---- Finding 3: rolling daily cap -------------------------------------------
+
+/// programs/pocket/src/window.rs: one-hour buckets, the current one and the 24 before it.
+const BUCKET_SLOTS: u64 = 9_000;
+const BUCKETS: u64 = 25;
+
+/// Moves the clock and republishes both prices at the new slot.
+fn set_slot(w: &mut World, slot: u64) {
+    set_clock(&mut w.h, slot);
+    refresh_prices(w);
+}
+
+/// Priced spending the window still counts at the current slot, read from
+/// the account bytes the way RollingWindow::total computes it.
+fn spent_in_window(w: &World) -> u64 {
+    let data = w.h.account_data(&w.pocket).unwrap();
+    let at = layout(&data).spending;
+    let u64_at = |i: usize| u64::from_le_bytes(data[i..i + 8].try_into().unwrap());
+    let (latest, now) = (u64_at(at), slot(w) / BUCKET_SLOTS);
+    (0..BUCKETS).filter(|i| {
+        // Index i holds the newest bucket at or before `latest` with that remainder.
+        let bucket = latest - (latest + BUCKETS - i) % BUCKETS;
+        now < latest || now - bucket < BUCKETS
+    }).map(|i| u64_at(at + 8 + 8 * i as usize)).sum()
+}
+
+/// Renews the fixture session for another day with the committed proof.
+fn renew(w: &mut World) {
+    let mut args = open_session_args(w, "circuits/keys/login_speculative_renew_proof.json", EXPIRY_SLOT + TIMELOCK_SLOTS, false);
+    args.claim_holdings = false;
+    let ix = open_session_ix(w, &args);
+    w.h.send(&[compute_budget(400_000), ix], &[]).expect("renew the session for another day");
+}
+
+#[test]
+fn the_daily_cap_cannot_be_exceeded_across_a_window_boundary() {
+    let mut w = world(true); // $200 daily cap; a software session spends at most $50 at a time.
+    let (usdc, pocket) = (w.usdc, w.pocket);
+    w.h.svm.set_account(w.pocket_usdc, token_account(&usdc, &pocket, 1_000_000_000)).unwrap();
+    let legs = priced(&w);
+    let mut nonce = 100;
+    let mut spend_25 = |w: &mut World| -> Result<(), String> {
+        nonce += 1;
+        let args = intent(w, nonce, w.usdc, 25_000_000, w.sol, 160_000_000);
+        fill(w, &args, &legs, 160_000_000)
+    };
+    let refused = |result: Result<(), String>| {
+        let err = result.expect_err("spending past the cap must be refused");
+        assert!(err.contains(DAILY_CAP_EXCEEDED), "{err}");
+    };
+
+    for _ in 0..7 {
+        spend_25(&mut w).expect("$175 of the $200 cap");
+    }
+    // The fixed day began when the pocket opened and reset 24 hours later.
+    let old_reset = OPEN_SLOT + TIMELOCK_SLOTS;
+    set_slot(&mut w, old_reset - 789);
+    renew(&mut w);
+    set_slot(&mut w, old_reset - 1);
+    spend_25(&mut w).expect("the last $25 of the cap");
+    assert_eq!(spent_in_window(&w), 200_000_000);
+    // A fixed day would reset one slot later and allow another full cap.
+    set_slot(&mut w, old_reset);
+    refused(spend_25(&mut w));
+
+    // The first $175 leaves when its hour leaves the window: still counted
+    // in the last slot of the 25th hour, gone in the next one.
+    let leaves = (FILL_SLOT / BUCKET_SLOTS + BUCKETS) * BUCKET_SLOTS;
+    set_slot(&mut w, leaves - 1);
+    refused(spend_25(&mut w));
+    set_slot(&mut w, leaves);
+    assert_eq!(spent_in_window(&w), 25_000_000);
+    for _ in 0..7 {
+        spend_25(&mut w).expect("the released budget");
+    }
+    assert_eq!(spent_in_window(&w), 200_000_000);
+    refused(spend_25(&mut w));
 }

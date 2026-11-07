@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { sha256 } from "@noble/hashes/sha256";
 import { SystemProgram } from "@solana/web3.js";
-import { BorshWriter, POCKET, POCKET_ACCOUNT_SIZE, encodePocketAccount, isPocketAccount, isPocketNonceUsed, readPocketAccount, writePolicy } from "../src/index.js";
+import { BorshWriter, POCKET, POCKET_ACCOUNT_SIZE, encodePocketAccount, isPocketAccount, isPocketNonceUsed, readPocketAccount,
+  rollingWindowTotal, writePolicy } from "../src/index.js";
 import type { Policy } from "@ghostlink/common";
 
 const appId = new Uint8Array(32).fill(3);
@@ -34,15 +35,27 @@ describe("Pocket account decoding", () => {
         else { writer.u8(1); writePolicy(writer, chosen); }
         writer.u64(500n);
       });
-      w.u64(1n).u64(2n).fixed(new Uint8Array(256)).u8(254).u64(100n).u64(2048n).u64(17n);
-      w.u64(9n).fixed(new Uint8Array(32).fill(7)).fixed(new Uint8Array(32).fill(5))
+      // Rolling windows: newest bucket index, then 25 hourly amounts (bucket b at b % 25).
+      const window = (latest: bigint, entries: [number, bigint][]) => {
+        w.u64(latest);
+        for (let i = 0; i < 25; i++) w.u64(entries.find(([at]) => at === i)?.[1] ?? 0n);
+      };
+      window(13_741n, [[16, 2n], [17, 3n]]); // index 16 is hour 13,741; index 17 is hour 13,717.
+      w.fixed(new Uint8Array(256)).u8(254).u64(100n).u64(2048n).u64(17n);
+      window(13_741n, [[16, 9n]]);
+      w.fixed(new Uint8Array(32).fill(7)).fixed(new Uint8Array(32).fill(5))
         .fixed(SystemProgram.programId.toBytes()).u64(12n).u64(13n);
       const data = new Uint8Array(POCKET_ACCOUNT_SIZE);
       data.set(w.out());
       const info = { owner: POCKET, data, executable: false, lamports: 1, rentEpoch: 0 };
       expect(readPocketAccount(info).ownerActionNonce).toBe(17n);
       expect(readPocketAccount(info).policy).toEqual(chosen);
-      expect(readPocketAccount(info).speculativeBoughtTodayUsdE6).toBe(9n);
+      const slot = 13_741n * 9_000n;
+      expect(rollingWindowTotal(readPocketAccount(info).speculativeBuys, slot)).toBe(9n);
+      // Hour 13,717 is the oldest still inside the window at hour 13,741 and leaves it next hour.
+      expect(rollingWindowTotal(readPocketAccount(info).spending, slot)).toBe(5n);
+      expect(rollingWindowTotal(readPocketAccount(info).spending, slot + 9_000n)).toBe(2n);
+      expect(rollingWindowTotal(readPocketAccount(info).spending, slot + 25n * 9_000n)).toBe(0n);
       expect(readPocketAccount(info).speculativePositions).toHaveLength(1);
       expect(readPocketAccount(info).speculativePositions[0]).toMatchObject({ quantity: 12n, costUsdE6: 13n });
       expect(isPocketAccount({ ...info, owner: SystemProgram.programId }, appId)).toBe(false);
@@ -55,15 +68,19 @@ describe("Pocket account decoding", () => {
   });
   it("encodes fixture accounts that decode to the same state", () => {
     const home = SystemProgram.programId, position = { mint: home, baseMint: POCKET, tokenAccount: POCKET, quantity: 4n, costUsdE6: 5n };
+    const spending = { latestBucket: 14n, amounts: Array.from({ length: 25 }, (_, i) => BigInt(i)) };
     const state = { appId, home, policy, bump: 7, sessionExpirySlot: 9n, nonceBase: 10n, ownerActionNonce: 11n,
-      pending: { change: { policy }, executableAfterSlot: 12n }, speculativePositions: [position] };
+      pending: { change: { policy }, executableAfterSlot: 12n }, speculativePositions: [position], spending };
     const data = encodePocketAccount(state);
     const decoded = readPocketAccount({ owner: POCKET, data, executable: false, lamports: 1, rentEpoch: 0 });
     expect([decoded.bump, decoded.sessionExpirySlot, decoded.nonceBase, decoded.ownerActionNonce]).toEqual([7, 9n, 10n, 11n]);
     expect(Buffer.from(decoded.appId).equals(Buffer.from(appId)) && decoded.home.equals(home)).toBe(true);
     expect(decoded.pending?.executableAfterSlot).toBe(12n);
     expect(decoded.speculativePositions).toEqual([position]);
+    expect(decoded.spending).toEqual(spending);
+    expect(decoded.speculativeBuys).toEqual({ latestBucket: 0n, amounts: Array(25).fill(0n) });
     expect(encodePocketAccount(decoded).equals(data)).toBe(true);
     expect(() => encodePocketAccount({ ...state, speculativePositions: Array(9).fill(position) })).toThrow(/too many/);
+    expect(() => encodePocketAccount({ ...state, spending: { latestBucket: 0n, amounts: [1n] } })).toThrow(/rolling window/);
   });
 });
