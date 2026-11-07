@@ -1,5 +1,5 @@
 /**
- * Incremental append-only Merkle tree, Semaphore style (build plan section 5).
+ * Incremental append-only Merkle tree, Semaphore style.
  *
  * The on-chain programs keep only a frontier of filled-subtree hashes plus
  * the next index. This class produces the same roots and additionally

@@ -1,5 +1,5 @@
 /**
- * Every Poseidon value in the protocol, in one place (build plan section 5).
+ * Every Poseidon value in the protocol, in one place.
  *
  * Poseidon here means the circomlib parameterisation over the BN254 scalar
  * field — the same parameters implemented by Solana's `sol_poseidon`

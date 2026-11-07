@@ -414,7 +414,7 @@ pub fn pyth_account(feed_id: &[u8; 32], price: i64, exponent: i32, publish_time:
 }
 
 /// SetComputeUnitLimit: proof-bearing transactions request 400k CU
-/// (build plan, section 6 compute budget).
+/// (the protocol's compute budget).
 pub fn compute_budget(units: u32) -> Instruction {
     let mut data = vec![2u8];
     data.extend_from_slice(&units.to_le_bytes());

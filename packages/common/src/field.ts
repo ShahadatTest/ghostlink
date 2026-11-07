@@ -1,5 +1,5 @@
 /**
- * BN254 scalar-field encoding rules (build plan, section 5).
+ * BN254 scalar-field encoding rules.
  *
  * Everything that enters a Poseidon hash or a circuit is a field element.
  * A 32-byte Solana key does not fit in 254 bits, so it is split into two

@@ -1,5 +1,5 @@
-//! The incremental Merkle frontier and root-history ring both trees use
-//! (build plan, section 5). Appending touches 26 Poseidon syscalls; the
+//! The incremental Merkle frontier and root-history ring both trees use.
+//! Appending touches 26 Poseidon syscalls; the
 //! zero-subtree constants are compiled in (`zeros.rs`, generated from the
 //! shared fixtures and cross-checked by a test).
 

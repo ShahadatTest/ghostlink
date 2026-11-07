@@ -1,5 +1,5 @@
 /**
- * Witness tests against the shared fixture vectors (build plan, test layer 2).
+ * Witness tests against the shared fixture vectors.
  *
  * The compiled circuit wasm asserts every constraint while calculating a
  * witness, so "calculates" means the inputs satisfy the circuit and

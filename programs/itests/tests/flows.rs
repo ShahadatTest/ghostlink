@@ -1,4 +1,4 @@
-//! End-to-end program tests under LiteSVM (build plan, test layers 3–4):
+//! End-to-end program tests under LiteSVM:
 //! the compiled registry, census and pocket binaries running the real
 //! flows — registration with precompile introspection, census snapshots,
 //! proof-verified session opening, atomic intent fills with oracle

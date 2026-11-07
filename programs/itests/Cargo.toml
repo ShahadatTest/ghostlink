@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish = false
-description = "Integration tests: the three compiled programs running under LiteSVM through every flow in the build plan. Deliberately depends on no program crate — instructions are rebuilt from raw bytes so any drift between stacks fails loudly."
+description = "Integration tests: the three compiled programs running under LiteSVM through every protocol flow. Deliberately depends on no program crate — instructions are rebuilt from raw bytes so any drift between stacks fails loudly."
 
 [dependencies]
 

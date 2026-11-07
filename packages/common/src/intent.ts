@@ -1,5 +1,5 @@
 /**
- * The intent schema: what an app may ask a pocket to do (build plan 4.4).
+ * The intent schema: what an app may ask a pocket to do.
  *
  * An intent is never a transaction. Its canonical bytes are fixed here;
  * the session key signs SHA-256(canonical bytes), and the pocket program
@@ -190,7 +190,7 @@ export function policyHash(p: Policy): Uint8Array {
   return sha256(policyBytes(p));
 }
 
-/** The conservative default policy (build plan, "Open decisions"). */
+/** The conservative default policy for new pockets. */
 export function conservativePolicy(): Policy {
   return {
     dailyCapUsdE6: 200_000_000n, // 200 USD

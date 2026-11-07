@@ -1,5 +1,7 @@
 # ADR 0001 — v1 scope decisions and deviations from the build plan
 
+> The build plan referred to in this record is the project's internal planning document. It is not published; this record keeps the decisions that matter for the public code.
+
 Status: accepted (v1 build). Each entry names the decision, why, and what
 would revisit it. Anything here that tightens later is a normal change;
 anything that loosens needs a design review.

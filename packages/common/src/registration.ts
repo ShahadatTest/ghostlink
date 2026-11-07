@@ -1,5 +1,5 @@
 /**
- * The one message a wallet ever signs (build plan 4.1).
+ * The one message a wallet ever signs.
  *
  * The message is printable ASCII so every wallet can display it, and every
  * binary part is encoded (hex for the commitment, base58 for keys). The
@@ -10,9 +10,13 @@
  *   commitment:<64 hex chars>
  *   wallet:<base58>
  *   program:<base58>
- *   cluster:<localnet|devnet|mainnet-beta>
+ *   cluster:<devnet|mainnet-beta>
  *
- * Lines are joined with "\n" and there is no trailing newline.
+ * Lines are joined with "\n" and there is no trailing newline. The cluster
+ * line is the registry build's tag, not the network name: every non-mainnet
+ * build, including the one a local validator runs, expects `devnet`. This
+ * encoder writes whatever it is given; the SDK's `buildRegistration` maps
+ * clusters to the right tag.
  *
  * For wallets that frame signatures with the Solana off-chain message
  * format (Ledger), `frameOffchain` wraps the same bytes; the registry

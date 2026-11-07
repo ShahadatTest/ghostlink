@@ -6,7 +6,7 @@ include "circomlib/circuits/bitify.circom";
 include "lib/merkle.circom";
 
 /*
- * The main GhostLink proof (build plan, circuit 1).
+ * The main GhostLink proof.
  *
  * Statement: "I know the secret s behind a commitment that sits in the
  * registry tree under wallet pk; app_id is derived from s and this app's

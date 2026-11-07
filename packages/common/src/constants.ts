@@ -29,7 +29,7 @@ export const REGISTER_TAG = "ghostlink:register:v1";
 /** ASCII prefix of canonical intent bytes. */
 export const INTENT_TAG = "ghostlink:intent:v1";
 
-/** Domain separators for Poseidon shapes (build plan section 5: never reuse a shape). */
+/** Domain separators for Poseidon shapes: never reuse a shape for two meanings. */
 export const SEP_APP_ID = 1n;
 export const SEP_OWNER_TAG = 2n;
 

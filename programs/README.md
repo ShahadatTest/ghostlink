@@ -6,24 +6,23 @@ Three small Anchor programs — each readable in one sitting — plus a shared v
 | --- | --- |
 | [`verifier/`](verifier) | Library linked into the programs: Groth16 verification (compiled-in keys), Poseidon values, Merkle frontier + root ring, intent bytes. No program of its own, so there is no cross-program trust boundary around proof checks. |
 | [`registry/`](registry) | `initialize`, `register`. No update, no delete, no admin. A wallet that wants a new secret uses a new wallet. |
-| [`census/`](census) | `initialize`, `snapshot` — permissionless, reads only token-program-owned accounts, so a snapshot can never lie. |
-| [`pocket/`](pocket) | `open_session`, `fill_begin`/`fill_end`, `sweep_home`, `propose/execute/cancel_change`, `revoke_session`. |
+| [`census/`](census) | `initialize`, `snapshot`. Permissionless: records the balance the chain shows at that moment (an SPL token account owned by the token program, or native SOL). It cannot tell borrowed from owned funds, so verifiers should require recent snapshots. |
+| [`pocket/`](pocket) | `open_session_v2`, `fill_begin`/`fill_end`, `sweep_home`, `propose_change`/`execute_change`/`cancel_change`, `revoke_session`. |
 | [`itests/`](itests) | LiteSVM integration tests: the compiled binaries running every flow and every refusal in the threat model. Deliberately rebuilds all instructions from raw bytes so cross-stack drift fails loudly. |
 
 ## Building and testing
 
 ```bash
-scripts/build-circuits.sh    # once: circuit keys the verifier compiles in
-for p in registry census pocket; do
-  cargo-build-sbf --manifest-path programs/$p/Cargo.toml --tools-version v1.52
-done
-cargo test --workspace       # vectors, proof cross-checks, LiteSVM flows
+bash scripts/build-programs.sh   # registry, census, pocket and the test-only CPI caller
+bash scripts/test-programs.sh    # vectors, proof cross-checks, LiteSVM flows
 ```
 
-## Invariants under audit (build plan §6)
+The verifying keys compiled into the programs and the fixture proofs the tests use are committed, so no circuit build is needed. `scripts/build-circuits.sh` regenerates all of them together when a circuit changes.
+
+## Invariants (tested, not yet independently audited)
 
 - Only `fill_begin` moves tokens to a non-home address, and it cannot commit without a matching `fill_end` in the same transaction.
 - Every `invoke_signed` with the pocket PDA lives in `pocket/src/token.rs` and is an SPL Token Transfer or CloseAccount the pocket issues itself.
-- `open_session` never changes the home or policy of an existing pocket.
+- `open_session_v2` never changes the home or policy of an existing pocket.
 - Every proof is bound to a domain and a session commitment or action hash; every root checks against a 128-root ring.
-- Upgrade authority is removed after audit sign-off; a v2 is a new program and users migrate by sweeping home.
+- Planned for mainnet: upgrade authority removed after audit sign-off; a new version is a new program and users migrate by sweeping home.

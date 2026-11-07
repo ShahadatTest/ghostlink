@@ -4,7 +4,7 @@ include "circomlib/circuits/poseidon.circom";
 include "lib/merkle.circom";
 
 /*
- * The owner proof (build plan, circuit 2): sweep, policy and home changes,
+ * The owner proof: sweep, policy and home changes,
  * session revoke. Proves the same registry binding as `login` without any
  * census claim, and binds `action_hash` — the hash of the instruction
  * payload — so a proof cannot be replayed for a different action.
