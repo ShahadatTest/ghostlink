@@ -37,6 +37,7 @@ async function main() {
       allowedDomainHashes: origins?.length ? new Set(origins.map(o => Buffer.from(fieldToBytes32(domainHash(o))).toString("hex"))) : undefined,
       trustProxy: process.env.TRUST_PROXY === "1",
       minimumBalanceLamports: Number(process.env.RELAYER_MIN_BALANCE_LAMPORTS ?? 50_000_000),
+      maxSnapshotFeeLamports: lamports(process.env.RELAYER_MAX_SNAPSHOT_FEE_LAMPORTS ?? "1000000"),
       maxInFlight: Number(process.env.RELAYER_MAX_IN_FLIGHT ?? 8) });
     operator = operatorServer(server.operations, rpc.status);
     await new Promise<void>((resolve, reject) => { operator!.once("error", reject); operator!.listen(operationsPort, "127.0.0.1", resolve); });
@@ -59,3 +60,8 @@ async function main() {
   } catch (error) { server?.operations.stop(); server?.close(); operator?.close(); rpc.close(); journal?.close(); throw error; }
 }
 void main().catch(() => { console.error("relayer startup failed; check approved configuration, legacy migration and dependencies"); process.exitCode = 1; });
+
+function lamports(value: string): bigint {
+  if (!/^(0|[1-9][0-9]{0,18})$/.test(value)) throw new Error("invalid lamport amount");
+  return BigInt(value);
+}

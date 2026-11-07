@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { Keypair, Transaction } from "@solana/web3.js";
 import bs58 from "bs58";
-import { POCKET, REGISTRY, CENSUS, POCKET_ACCOUNT_SIZE, pocketPda } from "@ghostlink/service-kit";
+import { POCKET, REGISTRY, CENSUS, POCKET_ACCOUNT_SIZE, censusConfigPda, pocketPda } from "@ghostlink/service-kit";
 import { RelayerJournal } from "@ghostlink/relayer/journal";
 import { WatcherState } from "@ghostlink/watcher";
 import { IndexerDatabase } from "../../indexer/dist/database.js";
@@ -24,6 +24,10 @@ const payer = Keypair.generate();
 const appIdHex = "01".repeat(32), pocketData = Buffer.alloc(POCKET_ACCOUNT_SIZE);
 createHash("sha256").update("account:PocketV3").digest().copy(pocketData, 0, 0, 8);
 Buffer.from(appIdHex, "hex").copy(pocketData, 8); payer.publicKey.toBuffer().copy(pocketData, 72);
+// The census config the relayer reads before paying a snapshot: discriminator, 100,000-lamport fee, bump.
+const censusConfig = Buffer.alloc(17);
+createHash("sha256").update("account:Config").digest().copy(censusConfig, 0, 0, 8);
+censusConfig.writeBigUInt64LE(100_000n, 8);
 const directory = mkdtempSync(join(tmpdir(), "ghostlink-service-rpc-"));
 const children = [], providers = [], accepted = new Set();
 const journalKeyPath = join(directory, "journal.key");
@@ -68,6 +72,10 @@ async function provider() {
       if (call.method === "getMultipleAccounts") return reply({ context: { slot: ++slot }, value: call.params[0].length === 2 ? emptyTreeAccounts(call.params[0]) :
         [{ owner: POCKET.toBase58(), executable: false, lamports: 1, rentEpoch: 0, data: [pocketData.toString("base64"), "base64"] }] });
       if (call.method === "getBlockHeight") return reply(slot);
+      if (call.method === "getAccountInfo" && call.params[0] === censusConfigPda().toBase58()) {
+        return reply({ context: { slot }, value: { owner: CENSUS.toBase58(), executable: false, lamports: 1_000_000, rentEpoch: 0,
+          data: [censusConfig.toString("base64"), "base64"] } });
+      }
       if (call.method === "getFeeForMessage") return reply({ context: { slot }, value: 10000 });
       if (call.method === "simulateTransaction") return reply({ context: { slot }, value: { err: null, logs: [], unitsConsumed: 1000 } });
       if (call.method === "sendTransaction") {
@@ -202,22 +210,23 @@ try {
   assert.equal(primary.packets[0], secondary.packets[0], "fallback changed the signed request");
   assert.equal(receipt.signature, bs58.encode(Transaction.from(Buffer.from(JSON.parse(primary.packets[0]).params[0], "base64")).signature));
   assert(secondary.statuses > 0, "confirmation bypassed fallback HTTP");
-  await until(async () => (await health(relayer))?.spentLamports24h === "10000", "cached spending did not refresh");
+  // Network fee plus the census snapshot fee.
+  await until(async () => (await health(relayer))?.spentLamports24h === "110000", "cached spending did not refresh");
   await stop(relayer); relayer = await start("relayer");
   await until(async () => await ready(relayer), "relayer did not reopen its journal");
   const repeated = await snapshot(relayer, originalBody); assert.equal(repeated.status, 200);
   assert.equal((await repeated.json()).signature, receipt.signature);
   assert.equal(primary.packets.length, 1); assert.equal(secondary.packets.length, 1);
-  await until(async () => (await health(relayer))?.spentLamports24h === "10000", "cached spending did not refresh");
+  await until(async () => (await health(relayer))?.spentLamports24h === "110000", "cached spending did not refresh");
   secondary.mode = "reject-send";
   const rejectedSend = await snapshot(relayer); assert.equal(rejectedSend.status, 202);
   const rejectedBody = await rejectedSend.text(); assert(!rejectedBody.includes(marker)); assert.equal(JSON.parse(rejectedBody).state, "pending");
-  await until(async () => (await health(relayer))?.spentLamports24h === "20000", "cached spending did not refresh");
+  await until(async () => (await health(relayer))?.spentLamports24h === "220000", "cached spending did not refresh");
   primary.mode = "outage"; secondary.mode = "outage";
   await until(async () => !await ready(relayer), "relayer admission survived total outage");
   const unavailable = await snapshot(relayer); assert.equal(unavailable.status, 503);
   assert(!JSON.stringify(await unavailable.json()).includes(marker));
-  assert.equal((await health(relayer)).spentLamports24h, "20000", "preparation failure spent budget");
+  assert.equal((await health(relayer)).spentLamports24h, "220000", "preparation failure spent budget");
   await stop(relayer); assert(!relayer.output.includes(marker), "relayer logs exposed provider diagnostics");
   console.log("Service RPC drill passed: real entry points, wrong-chain refusal, private diagnostics, cursor retry, identical-packet failover and HTTP confirmation.");
 } finally {

@@ -42,6 +42,7 @@ import {
   POCKET_ACCOUNT_SIZE,
   badRequest,
   cancelChangeIx,
+  censusConfigPda,
   clientIp,
   computeBudget,
   ed25519Ix,
@@ -49,6 +50,7 @@ import {
   openSessionIx,
   pocketPda,
   proposeChangeIx,
+  readCensusFee,
   registerIx,
   revokeSessionIx,
   snapshotIx,
@@ -74,6 +76,8 @@ export interface RelayerDeps {
   maxInFlight?: number;
   /** Operational SOL floor, independent of daily spending permission. */
   minimumBalanceLamports?: number;
+  /** Highest census snapshot fee this relayer pays, in lamports; default 1,000,000 (0.001 SOL). */
+  maxSnapshotFeeLamports?: bigint;
   /** Probe timing overrides for controlled deployments and deterministic tests. */
   probe?: Pick<OperationsOptions, "probeIntervalMs" | "probeTimeoutMs" | "freshnessMs" | "progressTimeoutMs" | "clock">;
 }
@@ -96,6 +100,8 @@ export function buildServer(deps: RelayerDeps): Server & { drain(): void; readon
   const ipLimiter = new RateLimiter(30, 60_000);
   const walletLimiter = new RateLimiter(3, 60_000);
   const snapshotLimiter = new RateLimiter(1, 60_000);
+  const maxSnapshotFee = deps.maxSnapshotFeeLamports ?? 1_000_000n;
+  if (typeof maxSnapshotFee !== "bigint" || maxSnapshotFee < 0n) throw new Error("invalid census snapshot fee limit");
   const router = new Router();
 
   function throttle(raw: Parameters<typeof clientIp>[0]): void {
@@ -108,6 +114,7 @@ export function buildServer(deps: RelayerDeps): Server & { drain(): void; readon
     return BigInt(rent);
   }
 
+  /** `rent` is every lamport a program takes beyond the network fee: account rent or the census fee. */
   interface Preparation { instructions: TransactionInstruction[]; rent: bigint; signers?: Keypair[];
     tokenPairs?: { source: string; destination: string; mint: string }[] }
   function paid(path: string, prepare: (request: Parameters<Handler>[0]) => Promise<Preparation>): void {
@@ -183,13 +190,20 @@ export function buildServer(deps: RelayerDeps): Server & { drain(): void; readon
     const req = objectBody(body) as Partial<SnapshotRequest>;
     const wallet = pubkey(req.wallet, "wallet");
     const holding = pubkey(req.holding, "holding");
-    // One snapshot per (wallet, holding) per minute: a burst of
-    // snapshots would also churn the census root ring under live proofs.
+    // One snapshot per (wallet, holding) per minute: each one costs the
+    // census fee as well as the network fee.
     if (!snapshotLimiter.allow(`${wallet.toBase58()}:${holding.toBase58()}`)) {
       throw new HttpError(429, "that holding was snapshotted less than a minute ago");
     }
-    const ix = snapshotIx(payer.publicKey, wallet, holding);
-    return { instructions: [ix], rent: 0n };
+    // The census charges its configured fee into its vault. Pay at most the
+    // fee read here, so a fee raised before landing fails instead of costing more.
+    let fee: bigint;
+    try { fee = readCensusFee(await connection.getAccountInfo(censusConfigPda(), "confirmed")); }
+    catch { throw new HttpError(503, "census fee configuration unavailable; try again later"); }
+    if (fee > maxSnapshotFee) throw new HttpError(503, "census snapshot fee exceeds this relayer's limit");
+    // A snapshot transaction may hold only compute-budget and snapshot instructions.
+    const ix = snapshotIx(payer.publicKey, wallet, holding, fee);
+    return { instructions: [ix], rent: fee };
   });
 
   paid("/open-session", async ({ body, raw }) => {

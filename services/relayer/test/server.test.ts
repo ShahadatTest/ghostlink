@@ -1,27 +1,36 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { RelayerJournal } from "../src/journal.js";
 import { once } from "node:events";
 import { describe, expect, it, vi } from "vitest";
-import { Connection, Keypair, SystemProgram, Transaction, type VersionedTransaction } from "@solana/web3.js";
+import { Connection, Keypair, PublicKey, SystemProgram, Transaction, type VersionedTransaction } from "@solana/web3.js";
 import bs58 from "bs58";
-import { POCKET_ACCOUNT_SIZE, POCKET, CENSUS, REGISTRY } from "@ghostlink/service-kit";
+import { POCKET_ACCOUNT_SIZE, POCKET, CENSUS, REGISTRY, censusConfigPda } from "@ghostlink/service-kit";
 import { buildServer, type RelayerDeps } from "../src/server.js";
 
 const payer = Keypair.generate();
 const genesisHash = Keypair.generate().publicKey.toBase58();
-function rpc(balance = 1_000_000_000) {
-  let slot = 48, simulationError: unknown = null;
+/** The census config account: discriminator, fee u64, bump. */
+function censusConfig(fee: bigint) {
+  const data = Buffer.alloc(17);
+  createHash("sha256").update("account:Config").digest().copy(data, 0, 0, 8);
+  data.writeBigUInt64LE(fee, 8);
+  return { owner: CENSUS, data, executable: false, lamports: 1_000_000 };
+}
+function rpc(balance = 1_000_000_000, initialSnapshotFee = 0n) {
+  let slot = 48, simulationError: unknown = null, snapshotFee = initialSnapshotFee;
   const accepted = new Set<string>();
   return {
     failSimulation: (error: unknown) => { simulationError = error; },
+    setSnapshotFee: (fee: bigint) => { snapshotFee = fee; },
     getBalanceAndContext: vi.fn(async () => ({ context: { slot: ++slot }, value: balance })),
     getGenesisHash: vi.fn(async () => genesisHash),
     getBlockHeight: vi.fn(async () => 50),
     getSignatureStatuses: vi.fn(async (ids: string[]) => ({ context: { slot }, value: ids.map(id => accepted.has(id) ? { slot, confirmationStatus: "confirmed", err: null } : null) })),
-    getAccountInfo: vi.fn(async () => ({ owner: SystemProgram.programId, data: Buffer.alloc(0), executable: false })),
+    getAccountInfo: vi.fn(async (address: PublicKey): Promise<unknown> => address.equals(censusConfigPda()) ? censusConfig(snapshotFee)
+      : { owner: SystemProgram.programId, data: Buffer.alloc(0), executable: false }),
     getLatestBlockhashAndContext: vi.fn(async () => ({ context: { slot }, value: { blockhash: Keypair.generate().publicKey.toBase58(), lastValidBlockHeight: 100 } })),
     getFeeForMessage: vi.fn(async () => ({ context: { slot }, value: 10_000 })),
     getMinimumBalanceForRentExemption: vi.fn(async () => 30_000_000),
@@ -253,6 +262,24 @@ describe("relayer fee and creation boundary", () => {
       expect(await spent(base, server)).toBe("0");
       expect((await post(base, "open-session", body)).status).toBe(200);
       expect(connection.sendRawTransaction).toHaveBeenCalledOnce();
+    });
+  });
+
+  it("pays and budgets the census fee it read, and refuses a fee above its limit", async () => {
+    const connection = rpc(1_000_000_000, 100_000n);
+    await withServer({ connection: connection as unknown as Connection, maxSnapshotFeeLamports: 100_000n }, async (base, server) => {
+      expect((await post(base, "snapshot", snapshot())).status).toBe(200);
+      expect(await spent(base, server)).toBe("110000"); // network fee plus census fee
+      const sent = Transaction.from(connection.sendRawTransaction.mock.calls[0]![0]);
+      expect(sent.instructions).toHaveLength(1); // a snapshot transaction holds nothing else
+      expect(sent.instructions[0]!.programId.equals(CENSUS)).toBe(true);
+      expect(sent.instructions[0]!.data.subarray(8).readBigUInt64LE(0)).toBe(100_000n); // the fee read is the maximum paid
+      connection.setSnapshotFee(100_001n);
+      expect((await post(base, "snapshot", snapshot())).status).toBe(503);
+      connection.getAccountInfo.mockResolvedValueOnce(null);
+      expect((await post(base, "snapshot", snapshot())).status).toBe(503);
+      expect(connection.sendRawTransaction).toHaveBeenCalledTimes(1);
+      expect(await spent(base, server)).toBe("110000");
     });
   });
 

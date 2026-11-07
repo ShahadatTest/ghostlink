@@ -46,6 +46,19 @@ export function censusTreePda(): PublicKey {
   return PublicKey.findProgramAddressSync([Buffer.from("census")], CENSUS)[0];
 }
 
+export function censusConfigPda(): PublicKey {
+  return PublicKey.findProgramAddressSync([Buffer.from("config")], CENSUS)[0];
+}
+
+export function censusFeeVaultPda(): PublicKey {
+  return PublicKey.findProgramAddressSync([Buffer.from("fee_vault")], CENSUS)[0];
+}
+
+/** The census program's ProgramData account; its upgrade authority governs the snapshot fee. */
+export function censusProgramDataPda(): PublicKey {
+  return PublicKey.findProgramAddressSync([CENSUS.toBuffer()], BPF_LOADER_UPGRADEABLE)[0];
+}
+
 export function bindingPda(wallet: PublicKey): PublicKey {
   return PublicKey.findProgramAddressSync([Buffer.from("binding"), wallet.toBuffer()], REGISTRY)[0];
 }
@@ -62,6 +75,8 @@ export function fillStatePda(pocket: PublicKey, nonce: bigint): PublicKey {
 
 export const computeBudget = (units: number) =>
   ComputeBudgetProgram.setComputeUnitLimit({ units });
+
+export const BPF_LOADER_UPGRADEABLE = new PublicKey("BPFLoaderUpgradeab1e11111111111111111111111");
 
 export const ATA_PROGRAM = new PublicKey("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
 
@@ -157,7 +172,13 @@ export function registerIx(payer: PublicKey, wallet: PublicKey, commitment: Uint
   });
 }
 
-export function snapshotIx(payer: PublicKey, wallet: PublicKey, holding: PublicKey) {
+/**
+ * A census snapshot. The payer also pays the census fee into the fee vault
+ * and names the most it accepts: read the current fee from the config
+ * account (`readCensusFee`). The transaction may hold nothing but
+ * compute-budget and snapshot instructions, and only at the top level.
+ */
+export function snapshotIx(payer: PublicKey, wallet: PublicKey, holding: PublicKey, maxFeeLamports: bigint) {
   return new TransactionInstruction({
     programId: CENSUS,
     keys: [
@@ -165,22 +186,53 @@ export function snapshotIx(payer: PublicKey, wallet: PublicKey, holding: PublicK
       { pubkey: wallet, isSigner: false, isWritable: false },
       { pubkey: holding, isSigner: false, isWritable: false },
       { pubkey: censusTreePda(), isSigner: false, isWritable: true },
+      { pubkey: censusConfigPda(), isSigner: false, isWritable: false },
+      { pubkey: censusFeeVaultPda(), isSigner: false, isWritable: true },
+      { pubkey: SYSVAR_INSTRUCTIONS_PUBKEY, isSigner: false, isWritable: false },
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
     ],
-    data: data("snapshot"),
+    data: data("snapshot", new BorshWriter().u64(maxFeeLamports).out()),
   });
 }
 
+/** Creates a tree; for the census also its fee config (default fee) and fee vault. */
 export function initializeIx(program: "registry" | "census", payer: PublicKey) {
-  const [programId, tree] =
-    program === "registry" ? [REGISTRY, registryTreePda()] : [CENSUS, censusTreePda()];
+  const keys = [
+    { pubkey: payer, isSigner: true, isWritable: true },
+    { pubkey: program === "registry" ? registryTreePda() : censusTreePda(), isSigner: false, isWritable: true },
+  ];
+  if (program === "census") {
+    keys.push({ pubkey: censusConfigPda(), isSigner: false, isWritable: true },
+      { pubkey: censusFeeVaultPda(), isSigner: false, isWritable: true });
+  }
+  keys.push({ pubkey: SystemProgram.programId, isSigner: false, isWritable: false });
+  return new TransactionInstruction({ programId: program === "registry" ? REGISTRY : CENSUS, keys, data: data("initialize") });
+}
+
+/** Sets the census snapshot fee; `authority` must be the census upgrade authority. */
+export function setSnapshotFeeIx(authority: PublicKey, feeLamports: bigint) {
   return new TransactionInstruction({
-    programId,
+    programId: CENSUS,
     keys: [
-      { pubkey: payer, isSigner: true, isWritable: true },
-      { pubkey: tree, isSigner: false, isWritable: true },
-      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+      { pubkey: authority, isSigner: true, isWritable: false },
+      { pubkey: censusProgramDataPda(), isSigner: false, isWritable: false },
+      { pubkey: censusConfigPda(), isSigner: false, isWritable: true },
     ],
-    data: data("initialize"),
+    data: data("set_fee", new BorshWriter().u64(feeLamports).out()),
+  });
+}
+
+/** Moves collected census fees to `recipient`; `authority` must be the census upgrade authority. */
+export function withdrawSnapshotFeesIx(authority: PublicKey, recipient: PublicKey, lamports: bigint) {
+  return new TransactionInstruction({
+    programId: CENSUS,
+    keys: [
+      { pubkey: authority, isSigner: true, isWritable: false },
+      { pubkey: censusProgramDataPda(), isSigner: false, isWritable: false },
+      { pubkey: censusFeeVaultPda(), isSigner: false, isWritable: true },
+      { pubkey: recipient, isSigner: false, isWritable: true },
+    ],
+    data: data("withdraw_fees", new BorshWriter().u64(lamports).out()),
   });
 }
 

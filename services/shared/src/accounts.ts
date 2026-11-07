@@ -1,9 +1,23 @@
 import { sha256 } from "@noble/hashes/sha256";
 import { PublicKey, type AccountInfo } from "@solana/web3.js";
 import type { Policy } from "@ghostlink/common";
-import { POCKET } from "./instructions.js";
+import { CENSUS, POCKET } from "./instructions.js";
 
 const POCKET_DISC = sha256(new TextEncoder().encode("account:PocketV3")).subarray(0, 8);
+const CENSUS_CONFIG_DISC = sha256(new TextEncoder().encode("account:Config")).subarray(0, 8);
+/** Discriminator, fee_lamports u64, bump u8. */
+export const CENSUS_CONFIG_SIZE = 17;
+
+/** The current census snapshot fee, in lamports, from the census config account. */
+export function readCensusFee(info: AccountInfo<Uint8Array> | null, expectedProgram = CENSUS): bigint {
+  if (!info || info.executable || !info.owner.equals(expectedProgram) || info.data.length !== CENSUS_CONFIG_SIZE ||
+    !CENSUS_CONFIG_DISC.every((b, i) => info.data[i] === b)) {
+    throw new Error("not the census config account");
+  }
+  let fee = 0n;
+  for (let i = 15; i >= 8; i--) fee = fee * 256n + BigInt(info.data[i]!);
+  return fee;
+}
 /** Discriminator plus current Pocket::INIT_SPACE, including the bounded speculative ledger. */
 export const POCKET_ACCOUNT_SIZE = 3293;
 
