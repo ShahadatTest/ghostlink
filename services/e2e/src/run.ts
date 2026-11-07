@@ -5,7 +5,9 @@
  *   1. initialize both trees
  *   2. register a wallet through the relayer (true secret derivation:
  *      s = SHA-256 of the wallet's deterministic signature)
- *   3. census snapshot through the relayer; indexer ingests from RPC
+ *   3. census snapshot through the relayer (paying the census fee); the
+ *      indexer ingests from RPC and serves both leaves once their
+ *      root-history buckets end
  *   4. prove login on this machine (snarkjs, dev keys)
  *   5. verify the proof server-side with @ghostlink/verify
  *   6. open the pocket session through the relayer
@@ -32,6 +34,7 @@ import bs58 from "bs58";
 import * as snarkjs from "snarkjs";
 
 import {
+  DEFAULT_SNAPSHOT_FEE_LAMPORTS,
   bytesToHex,
   hexToBytes,
   appId as deriveAppId,
@@ -69,6 +72,7 @@ import { verifyLogin } from "@ghostlink/verify";
 import {
   REGISTRY,
   ataAddress,
+  censusFeeVaultPda,
   createAtaIdempotentIx,
   initializeIx,
   initializeMint2Ix,
@@ -314,6 +318,7 @@ async function main() {
 
   // ---- census snapshot -----------------------------------------------------
   const holding = ataAddress(wallet.publicKey, inputMint);
+  const vaultBefore = BigInt(await connection.getBalance(censusFeeVaultPda(), "confirmed"));
   const snapshotReceipt = await settleRelayer(prepareRelayerOperation("/snapshot", {
     wallet: wallet.publicKey.toBase58(), holding: holding.toBase58(),
   }, bytesToHex(label("initial census snapshot"))));
@@ -352,20 +357,26 @@ async function main() {
       ok("indexer refused omitted RPC history against actual finalized registry/census accounts");
     } finally { omitted.database.close(); }
   }
+  // Each program keeps one root per 150-slot bucket and the indexer serves only roots of buckets
+  // that have ended (about a minute on a local validator), so wait for both leaves to be servable.
   let initialHistoryReady = false;
-  for (let ticks = 0; ticks < 100; ticks++) {
+  const historyDeadline = Date.now() + 180_000;
+  while (Date.now() < historyDeadline) {
     await poller.tick();
     // A completed RPC scan is not proof of archival completeness. Require the known fixture effects too.
     if (!poller.status.catchingUp && store.bindings.has(wallet.publicKey.toBase58()) &&
         store.latestCensus.has(`${wallet.publicKey.toBase58()}:${inputMint.toBase58()}`)) { initialHistoryReady = true; break; }
-    if (!poller.status.catchingUp) await new Promise(resolve => setTimeout(resolve, 250));
+    if (!poller.status.catchingUp) await new Promise(resolve => setTimeout(resolve, 1_000));
   }
-  if (!initialHistoryReady) throw new Error("indexer did not ingest the confirmed registration and census records");
+  if (!initialHistoryReady) throw new Error("indexer did not serve the confirmed registration and census records");
   if (finalizedIndexer) {
     if (!poller.status.rootsUsable || (await fetch(`${indexerUrl}/ready`)).status !== 200) throw new Error("indexer finalized roots were not reconciled and usable");
     ok("finalized indexer reconciled both trees at the saved scan slot and checked confirmed root-ring availability");
   }
-  ok(`indexer ingested ${store.registryLeaves.length} registry + ${store.censusLeaves.length} census leaves`);
+  ok(`indexer serves ${store.completedSize("registry")} registry + ${store.completedSize("census")} census leaves from completed root buckets`);
+  const vaultGain = BigInt(await connection.getBalance(censusFeeVaultPda(), "confirmed")) - vaultBefore;
+  if (vaultGain !== DEFAULT_SNAPSHOT_FEE_LAMPORTS) throw new Error(`census fee vault gained ${vaultGain} lamports, expected one snapshot fee`);
+  ok("relayed census snapshot paid the default fee into the fee vault");
 
   // ---- prove login (SDK + indexer witness) ---------------------------------
   const binding = (await (await fetch(`${indexerUrl}/registry/binding/${wallet.publicKey.toBase58()}`)).json()) as {
