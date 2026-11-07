@@ -67,6 +67,12 @@ the runner waits for both feeds to be ≤ 40 s old, recomputes `out_min` from
 the live SOL/USD price (`$25 → lamports × 1.004`), then fires the fill.
 Expect a wait of up to five minutes before the fill step.
 
+The V2 candidate is stricter ([ADR 0006](adr/0006-pocket-hardening.md)): it
+accepts only the shard-0 sponsored account of each pinned feed, a publish age
+of at most 30 s, a posting age of at most 75 slots and a confidence interval
+of at most 1% of the price. Waiting for a ≤ 40 s old update would no longer
+be enough; a V2 runner would have to push a fresh update itself.
+
 Costs per run (devnet SOL): ~0.02 to the wallet, ~0.06 to the solver, plus
 rent for the pocket and token accounts; the deployer needs ≥ 0.3 SOL spare.
 

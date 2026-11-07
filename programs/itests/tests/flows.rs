@@ -357,8 +357,9 @@ fn fill_world_with_policy(speculative: bool) -> FillWorld {
     let solver_in = Pubkey::new_unique();
     let pocket_out = Pubkey::new_unique();
     let solver_out = Pubkey::new_unique();
-    let usdc_price = Pubkey::new_unique();
-    let sol_price = Pubkey::new_unique();
+    // The pocket accepts only each pinned feed's sponsored push-feed account.
+    let usdc_price = push_feed_address(&label("usdc pyth feed"));
+    let sol_price = push_feed_address(&label("sol pyth feed"));
     let usdc = ctx.usdc;
     let sol = ctx.sol;
     let pocket = ctx.pocket;

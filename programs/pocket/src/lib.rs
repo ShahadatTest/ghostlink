@@ -349,7 +349,7 @@ pub mod ghostlink_pocket {
             (false, false) => return err!(PocketError::NoInputOracle),
         };
         let in_value_usd_e6 = if let Some(feed) = in_feed {
-            let price = read_price(&ctx.accounts.in_price.to_account_info(), &feed.feed_id, clock.unix_timestamp)?;
+            let price = read_price(&ctx.accounts.in_price.to_account_info(), &feed.feed_id, &clock)?;
             usd_e6(args.in_max, feed.decimals, &price)?
         } else { 0 };
         pocket.roll_day(clock.slot);
@@ -456,7 +456,7 @@ pub mod ghostlink_pocket {
                 .as_ref()
                 .ok_or(error!(PocketError::BadOracle))?
                 .to_account_info();
-            let out_price = read_price(&out_price_info, &out_feed.feed_id, clock.unix_timestamp)?;
+            let out_price = read_price(&out_price_info, &out_feed.feed_id, &clock)?;
             let out_usd = usd_e6(args.out_min, out_feed.decimals, &out_price)? as u128;
             let floor = (fill.in_value_usd_e6 as u128)
                 .checked_mul(10_000u128 - pocket.policy.max_slippage_bps as u128)
@@ -832,7 +832,8 @@ pub struct FillBegin<'info> {
     pub solver_in_account: UncheckedAccount<'info>,
     /// CHECK: parsed and owner/mint-checked in handler (balance snapshot).
     pub pocket_out_account: UncheckedAccount<'info>,
-    /// CHECK: Pyth price update, owner- and feed-checked in handler.
+    /// CHECK: the pinned feed's sponsored Pyth price account; address,
+    /// owner, feed, confidence and freshness checked in handler.
     pub in_price: UncheckedAccount<'info>,
     #[account(
         init,
@@ -871,7 +872,7 @@ pub struct FillEnd<'info> {
     /// CHECK: parsed and owner/mint-checked in handler.
     pub pocket_out_account: UncheckedAccount<'info>,
     /// CHECK: Pyth price update for the output mint, when the policy
-    /// binds one; owner- and feed-checked in handler.
+    /// binds one; checked like in_price in handler.
     pub out_price: Option<UncheckedAccount<'info>>,
 }
 

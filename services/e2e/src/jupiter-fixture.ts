@@ -8,7 +8,7 @@ import { ataAddress, TOKEN } from "@ghostlink/service-kit";
 import { JupiterPlanner, JUPITER } from "@ghostlink/solver/jupiter";
 import { RAYDIUM_CP, RAYDIUM_AUTHORITY, readPool, checkPoolSnapshot, type ApprovedPool, type RaydiumPool } from "@ghostlink/solver/raydium";
 import type { RoutePlanner } from "@ghostlink/solver/server";
-import { label, priceAccountFor, pythAccountData, PYTH_RECEIVER } from "./genesis.js";
+import { label, pushFeedAccount, pythAccountData, PYTH_RECEIVER } from "./genesis.js";
 
 const NATIVE = "So11111111111111111111111111111111111111112";
 const EVENT = new PublicKey("D8cy77BBepLMngZx6ZukaTff5hCt1HrWyKk3Hnd9oitf");
@@ -65,8 +65,8 @@ export function prepareJupiterGenesis(source: string, destination: string): Jupi
   for (const entry of entries.slice(0, 7)) writeFileSync(join(destination, "accounts", `${entry.pubkey}.json`),
     JSON.stringify({ ...entry, account: { ...entry.account, rentEpoch: 0 } }));
   const publishTime = BigInt(Math.floor(Date.now() / 1000) + 86_400); // Synthetic localnet only, as in the inventory harness.
-  for (const [tag, feed, price] of [["e2e usdc price acct", "usdc pyth feed", price0], ["e2e sol price acct", "sol pyth feed", price1]] as const) {
-    const pubkey = priceAccountFor(tag).toBase58();
+  for (const [feed, price] of [["usdc pyth feed", price0], ["sol pyth feed", price1]] as const) {
+    const pubkey = pushFeedAccount(feed).toBase58();
     writeFileSync(join(destination, "accounts", `${pubkey}.json`), JSON.stringify({ pubkey, account: {
       data: [pythAccountData(label(feed), price, -8, publishTime).toString("base64"), "base64"],
       lamports: 10_000_000, owner: PYTH_RECEIVER, executable: false, rentEpoch: 0,

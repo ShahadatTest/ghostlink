@@ -76,6 +76,7 @@ pub const SECP256R1_ID: &str = "Secp256r1SigVerify1111111111111111111111111";
 pub const SYSVAR_IX_ID: &str = "Sysvar1nstructions1111111111111111111111111";
 pub const SYSTEM_ID: &str = "11111111111111111111111111111111";
 pub const PYTH_RECEIVER_ID: &str = "rec5EKMGg6MxZYaMdyBfgwp4d5rB9T1VQH5pJv5LtFJ";
+pub const PUSH_ORACLE_ID: &str = "pythWSnswVUd12oZpeFP8e9CVaEqJg25g1Vtc2biRsT";
 /// Test-only program that forwards any instruction via CPI (programs/cpi-caller).
 pub const CPI_CALLER_ID: &str = "GnAug2mhW6HavrtFSPWa3ikA4PmGibzBmUgk9Lq21tjk";
 pub const PRICE_UPDATE_V2_DISC: [u8; 8] = [34, 241, 35, 99, 157, 126, 244, 205];
@@ -409,22 +410,32 @@ pub fn mint_account(decimals: u8, freeze_authority: Option<&Pubkey>) -> Account 
     }
 }
 
-/// A Pyth PriceUpdateV2 account with a fully-verified price.
-pub fn pyth_account(feed_id: &[u8; 32], price: i64, exponent: i32, publish_time: i64) -> Account {
+/// The sponsored (shard 0) push-feed account of a Pyth feed: the only
+/// price account the pocket accepts for that feed.
+pub fn push_feed_address(feed_id: &[u8; 32]) -> Pubkey {
+    pda(&[&0u16.to_le_bytes(), feed_id], &pk(PUSH_ORACLE_ID))
+}
+
+/// A Pyth PriceUpdateV2 account; `full: false` writes a partially verified one.
+pub fn pyth_update(feed_id: &[u8; 32], price: i64, exponent: i32, conf: u64, publish_time: i64,
+    posted_slot: u64, full: bool) -> Account {
     let mut data = Vec::with_capacity(134);
     data.extend_from_slice(&PRICE_UPDATE_V2_DISC);
     data.extend_from_slice(&[0u8; 32]); // write authority
-    data.push(1); // VerificationLevel::Full
-    data.extend_from_slice(&[0u8; 32][..0]); // (no partial byte)
+    if full {
+        data.push(1); // VerificationLevel::Full
+    } else {
+        data.extend_from_slice(&[0, 5]); // VerificationLevel::Partial { num_signatures: 5 }
+    }
     data.extend_from_slice(feed_id);
     data.extend_from_slice(&price.to_le_bytes());
-    data.extend_from_slice(&0u64.to_le_bytes()); // conf
+    data.extend_from_slice(&conf.to_le_bytes());
     data.extend_from_slice(&exponent.to_le_bytes());
     data.extend_from_slice(&publish_time.to_le_bytes());
     data.extend_from_slice(&publish_time.to_le_bytes()); // prev
     data.extend_from_slice(&price.to_le_bytes()); // ema price
-    data.extend_from_slice(&0u64.to_le_bytes()); // ema conf
-    data.extend_from_slice(&0u64.to_le_bytes()); // posted slot
+    data.extend_from_slice(&conf.to_le_bytes()); // ema conf
+    data.extend_from_slice(&posted_slot.to_le_bytes());
     Account {
         lamports: 10_000_000,
         data,
@@ -432,6 +443,13 @@ pub fn pyth_account(feed_id: &[u8; 32], price: i64, exponent: i32, publish_time:
         executable: false,
         rent_epoch: 0,
     }
+}
+
+/// A fully-verified Pyth PriceUpdateV2 account with zero confidence. Like
+/// the localnet genesis accounts it never ages by slot (a far-future posted
+/// slot); pocket_hardening.rs tests the posting age explicitly.
+pub fn pyth_account(feed_id: &[u8; 32], price: i64, exponent: i32, publish_time: i64) -> Account {
+    pyth_update(feed_id, price, exponent, 0, publish_time, u64::MAX, true)
 }
 
 /// SetComputeUnitLimit: proof-bearing transactions request 400k CU

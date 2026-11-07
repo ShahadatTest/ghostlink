@@ -7,7 +7,7 @@
  * refuses intents that ask for more than the input plus its spread.
  */
 import { PublicKey, type Connection } from "@solana/web3.js";
-import { SPL_TOKEN_PROGRAM_ID, type Intent } from "@ghostlink/common";
+import { PYTH_RECEIVER_PROGRAM_ID, SPL_TOKEN_PROGRAM_ID, pythPushFeedAddress, type Intent } from "@ghostlink/common";
 
 export interface PriceInfo {
   price: bigint;
@@ -16,22 +16,33 @@ export interface PriceInfo {
 }
 
 const PRICE_UPDATE_V2_DISC = [34, 241, 35, 99, 157, 126, 244, 205];
-const PYTH_RECEIVER = new PublicKey("rec5EKMGg6MxZYaMdyBfgwp4d5rB9T1VQH5pJv5LtFJ");
+const PYTH_RECEIVER = new PublicKey(PYTH_RECEIVER_PROGRAM_ID);
 const TOKEN_PROGRAM = new PublicKey(SPL_TOKEN_PROGRAM_ID);
+/** programs/pocket/src/state.rs MAX_ORACLE_CONF_BPS: the widest confidence interval accepted. */
+export const MAX_ORACLE_CONF_BPS = 100n;
 
 /** Parses a Pyth PriceUpdateV2 account the way programs/pocket/src/oracle.rs does. */
-export function parsePriceUpdate(data: Uint8Array): { price: bigint; exponent: number } {
-  if (data.length < 8 + 32 + 1 + 32 + 8 + 8 + 4 + 8) throw new Error("price account too short");
+export function parsePriceUpdate(data: Uint8Array): {
+  feedId: Uint8Array; price: bigint; conf: bigint; exponent: number; publishTime: bigint; postedSlot: bigint;
+} {
+  if (data.length < 8 + 32 + 1) throw new Error("price account too short");
   if (!PRICE_UPDATE_V2_DISC.every((b, i) => data[i] === b)) throw new Error("not a PriceUpdateV2 account");
   let off = 8 + 32;
   if (data[off] !== 1) throw new Error("price update is not fully verified");
-  off += 1 + 32; // verification level, feed id
+  off += 1;
+  if (data.length < off + 32 + 8 + 8 + 4 + 8 + 8 + 8 + 8 + 8) throw new Error("price account too short");
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  const feedId = data.slice(off, off + 32);
+  off += 32;
   const price = view.getBigInt64(off, true);
-  off += 8 + 8; // price, conf
-  const exponent = view.getInt32(off, true);
+  const conf = view.getBigUint64(off + 8, true);
+  const exponent = view.getInt32(off + 16, true);
+  const publishTime = view.getBigInt64(off + 20, true);
+  // previous publish time, EMA price and EMA confidence precede the posted slot.
+  const postedSlot = view.getBigUint64(off + 52, true);
   if (price <= 0n) throw new Error("non-positive price");
-  return { price, exponent };
+  if (conf * 10_000n > price * MAX_ORACLE_CONF_BPS) throw new Error("price confidence interval is too wide");
+  return { feedId, price, conf, exponent, publishTime, postedSlot };
 }
 
 /** USD value in micro-dollars, same arithmetic as the pocket's usd_e6. */
@@ -110,7 +121,11 @@ export class PriceReader {
     ]);
     if (!priceInfo) throw new Error(`price account ${account} not found`);
     if (!priceInfo.owner.equals(PYTH_RECEIVER)) throw new Error("price account is not owned by the Pyth receiver");
-    const { price, exponent } = parsePriceUpdate(new Uint8Array(priceInfo.data));
+    const { feedId, price, exponent } = parsePriceUpdate(new Uint8Array(priceInfo.data));
+    // The pocket accepts only the sponsored shard-0 push account for a feed.
+    if (!new PublicKey(pythPushFeedAddress(feedId).address).equals(new PublicKey(account))) {
+      throw new Error(`price account ${account} is not the sponsored push-feed account for its feed`);
+    }
     return { price, exponent, decimals };
   }
 

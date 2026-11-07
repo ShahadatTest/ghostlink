@@ -63,4 +63,11 @@ export const SPL_TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA
 export const TOKEN_2022_PROGRAM_ID = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
 export const SYSVAR_INSTRUCTIONS_ID = "Sysvar1nstructions1111111111111111111111111";
 
+/** Pyth receiver: owns every PriceUpdateV2 account the pocket accepts. */
+export const PYTH_RECEIVER_PROGRAM_ID = "rec5EKMGg6MxZYaMdyBfgwp4d5rB9T1VQH5pJv5LtFJ";
+/** Pyth push oracle: its shard-0 PDA per feed id is the sponsored price account. */
+export const PYTH_PUSH_ORACLE_PROGRAM_ID = "pythWSnswVUd12oZpeFP8e9CVaEqJg25g1Vtc2biRsT";
+/** The shard Pyth's sponsored pusher keeps current; the pocket accepts no other. */
+export const PYTH_SPONSORED_SHARD = 0;
+
 export type Cluster = "localnet" | "devnet" | "mainnet-beta";

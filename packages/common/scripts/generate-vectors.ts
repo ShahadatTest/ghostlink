@@ -40,6 +40,7 @@ import {
   censusTreePda,
   pocketPda,
   fillStatePda,
+  pythPushFeedAddress,
   toBase58,
   pk,
   REGISTRY_PROGRAM_ID,
@@ -283,6 +284,11 @@ const vectors = {
     censusTree: { address: toBase58(cenTree.address), bump: cenTree.bump },
     pocket: { address: toBase58(pocket.address), bump: pocket.bump, appId: fe(aId) },
     fillState: { address: toBase58(fill.address), bump: fill.bump },
+    // The only Pyth accounts the pocket accepts for the fixture feeds (shard 0).
+    pythPushFeeds: policyFeeds.oracleFeeds.map((f) => {
+      const feed = pythPushFeedAddress(f.feedId);
+      return { feedId: hex(f.feedId), address: toBase58(feed.address), bump: feed.bump };
+    }),
   },
 };
 

@@ -7,7 +7,9 @@ import { sha256 } from "@noble/hashes/sha256";
 import { ed25519 } from "@noble/curves/ed25519";
 import bs58 from "bs58";
 import { fieldToBytes32, FieldElement } from "./field.js";
-import { POCKET_PROGRAM_ID, REGISTRY_PROGRAM_ID, CENSUS_PROGRAM_ID } from "./constants.js";
+import {
+  POCKET_PROGRAM_ID, REGISTRY_PROGRAM_ID, CENSUS_PROGRAM_ID, PYTH_PUSH_ORACLE_PROGRAM_ID, PYTH_SPONSORED_SHARD,
+} from "./constants.js";
 
 const PDA_MARKER = new TextEncoder().encode("ProgramDerivedAddress");
 
@@ -71,6 +73,21 @@ export function censusFeeVaultPda(programId: Uint8Array = pk(CENSUS_PROGRAM_ID))
 /** Pocket: one pocket per app_id (app_id as 32 big-endian bytes). */
 export function pocketPda(appId: FieldElement, programId: Uint8Array = pk(POCKET_PROGRAM_ID)) {
   return findProgramAddress([te.encode("pocket"), fieldToBytes32(appId)], programId);
+}
+
+/**
+ * The Pyth price account the pocket accepts for a feed: the push oracle's
+ * PDA of (shard u16 LE, feed id), the account Pyth's sponsored pusher keeps
+ * current. Same derivation as Pyth's `getPriceFeedAccountForProgram`.
+ */
+export function pythPushFeedAddress(
+  feedId: Uint8Array,
+  shard = PYTH_SPONSORED_SHARD,
+  programId: Uint8Array = pk(PYTH_PUSH_ORACLE_PROGRAM_ID),
+) {
+  if (!(feedId instanceof Uint8Array) || feedId.length !== 32) throw new Error("feed id must be 32 bytes");
+  if (!Number.isInteger(shard) || shard < 0 || shard > 0xffff) throw new Error("shard out of u16 range");
+  return findProgramAddress([new Uint8Array([shard & 0xff, shard >> 8]), feedId], programId);
 }
 
 /** Pocket: transient fill state for one intent, seeded by its nonce (u64 LE). */

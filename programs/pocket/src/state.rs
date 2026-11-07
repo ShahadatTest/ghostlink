@@ -12,8 +12,12 @@ pub const SLOTS_PER_DAY: u64 = 216_000;
 /// How stale the census snapshot behind a holdings claim may be.
 pub const MAX_MIN_SLOT_LAG: u64 = 9_000; // ~1 hour
 
-/// How stale an oracle price may be, in seconds.
-pub const MAX_ORACLE_AGE_SECS: i64 = 60;
+/// How old an oracle price may be, in seconds of Pyth publish time.
+pub const MAX_ORACLE_AGE_SECS: i64 = 30;
+/// How many slots ago the price may have been posted on Solana (~30 s).
+pub const MAX_ORACLE_POSTED_AGE_SLOTS: u64 = 75;
+/// The widest Pyth confidence interval accepted, in basis points of the price.
+pub const MAX_ORACLE_CONF_BPS: u64 = 100;
 
 /// Intent nonces live in a sliding window of `NONCE_WINDOW` values that
 /// starts at `Pocket::nonce_base`. Any nonce inside the window can be
@@ -469,4 +473,8 @@ pub enum PocketError {
     PositionsOpen,
     #[msg("speculative buys refuse mints that have a freeze authority")]
     FreezableMint,
+    #[msg("oracle account is not the sponsored push-feed account of the pinned feed")]
+    OracleNotCanonical,
+    #[msg("oracle confidence interval is too wide")]
+    OracleConfidence,
 }

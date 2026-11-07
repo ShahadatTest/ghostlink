@@ -21,9 +21,13 @@ const TIMELOCK_SLOTS: u64 = 216_000;
 
 // Custom error codes: 6000 + the variant's position in PocketError.
 const OUTPUT_TOO_LOW: &str = "Custom(6029)";
+const BAD_ORACLE: &str = "Custom(6031)";
+const STALE_ORACLE: &str = "Custom(6032)";
 const BAD_TOKEN_ACCOUNT: &str = "Custom(6033)";
 const POSITIONS_OPEN: &str = "Custom(6046)";
 const FREEZABLE_MINT: &str = "Custom(6047)";
+const ORACLE_NOT_CANONICAL: &str = "Custom(6048)";
+const ORACLE_CONFIDENCE: &str = "Custom(6049)";
 // SPL Token's TokenError::MintCannotFreeze.
 const MINT_CANNOT_FREEZE: &str = "Custom(16)";
 
@@ -97,7 +101,7 @@ fn world(speculative: bool) -> World {
     h.send(&[census_snapshot_ix(&payer, &wallet.pubkey(), &holding)], &[]).expect("snapshot");
 
     let mut w = World { h, v, session, solver: Keypair::new(), registry_tree, pocket, home, policy, usdc, sol,
-        usdc_price: Pubkey::new_unique(), sol_price: Pubkey::new_unique(),
+        usdc_price: push_feed_address(&usdc_feed()), sol_price: push_feed_address(&sol_feed()),
         pocket_usdc: Pubkey::new_unique(), pocket_sol: Pubkey::new_unique(),
         solver_usdc: Pubkey::new_unique(), solver_sol: Pubkey::new_unique() };
     set_clock(&mut w.h, OPEN_SLOT);
@@ -120,11 +124,20 @@ fn world(speculative: bool) -> World {
     w
 }
 
-/// USDC at $1.00 and SOL at $156.25, published now.
+fn usdc_feed() -> [u8; 32] {
+    label("usdc pyth feed")
+}
+
+fn sol_feed() -> [u8; 32] {
+    label("sol pyth feed")
+}
+
+/// USDC at $1.00 and SOL at $156.25, published and posted now, in the
+/// sponsored accounts the pocket pins for the policy's feeds.
 fn refresh_prices(w: &mut World) {
-    let (usdc_price, sol_price) = (w.usdc_price, w.sol_price);
-    w.h.svm.set_account(usdc_price, pyth_account(&label("usdc pyth feed"), 100_000_000, -8, UNIX_T)).unwrap();
-    w.h.svm.set_account(sol_price, pyth_account(&label("sol pyth feed"), 15_625_000_000, -8, UNIX_T)).unwrap();
+    let (usdc_price, sol_price, now) = (w.usdc_price, w.sol_price, slot(w));
+    w.h.svm.set_account(usdc_price, pyth_update(&usdc_feed(), 100_000_000, -8, 0, UNIX_T, now, true)).unwrap();
+    w.h.svm.set_account(sol_price, pyth_update(&sol_feed(), 15_625_000_000, -8, 0, UNIX_T, now, true)).unwrap();
 }
 
 fn open_session_args(w: &World, proof_file: &str, expiry: u64, with_policy: bool) -> OpenSessionArgs {
@@ -533,4 +546,69 @@ fn unsynced_wrapped_sol_in_the_output_account_never_counts_as_delivery() {
     let solver_key = w.solver.clone();
     w.h.send(&tx, &[&solver_key]).expect("an unsynced delivery during the fill counts");
     assert_eq!(w.h.token_balance(&w.solver_usdc), Some(50_000_000));
+}
+
+// ---- Finding 2: pinned, fresh, confident oracle accounts -------------------
+
+/// A USDC price update with every field the pocket checks under control.
+fn usdc_update(conf: u64, publish_time: i64, posted_slot: u64, full: bool) -> solana_account::Account {
+    pyth_update(&usdc_feed(), 100_000_000, -8, conf, publish_time, posted_slot, full)
+}
+
+#[test]
+fn oracle_prices_come_only_from_the_fresh_confident_sponsored_account() {
+    let mut w = world(false);
+    // The pocket derives the only acceptable account from the pinned feed id;
+    // TypeScript derives the same addresses (vectors.json).
+    let feeds = w.v["pdas"]["pythPushFeeds"].as_array().unwrap().clone();
+    assert_eq!(feeds.len(), 2);
+    for (feed, account) in feeds.iter().zip([w.usdc_price, w.sol_price]) {
+        assert_eq!(push_feed_address(&hex32(feed["feedId"].as_str().unwrap())), account);
+        assert_eq!(feed["address"].as_str().unwrap(), account.to_string());
+    }
+    let now = slot(&w);
+    let args = intent(&w, 7, w.usdc, 25_000_000, w.sol, 160_000_000);
+    let watched = [w.pocket_usdc, w.solver_usdc, w.pocket_sol, w.solver_sol];
+    let deliver = |w: &World| vec![spl_transfer(&w.solver_sol, &w.pocket_sol, &w.solver.pubkey(), 160_000_000)];
+
+    // A receiver-owned update with the right feed at any other address: the
+    // solver can no longer bring its own posted update.
+    let elsewhere = Pubkey::new_unique();
+    w.h.svm.set_account(elsewhere, usdc_update(0, UNIX_T, now, true)).unwrap();
+    let legs = Legs { in_price: Some(elsewhere), ..priced(&w) };
+    let tx = fill_tx(&w, &args, &legs, deliver(&w));
+    refused_without_movement(&mut w, &tx, ORACLE_NOT_CANONICAL, &watched);
+    // The same for the output leg's price in fill_end.
+    let sol_elsewhere = Pubkey::new_unique();
+    w.h.svm.set_account(sol_elsewhere, pyth_update(&sol_feed(), 15_625_000_000, -8, 0, UNIX_T, now, true)).unwrap();
+    let legs = Legs { out_price: Some(sol_elsewhere), ..priced(&w) };
+    let tx = fill_tx(&w, &args, &legs, deliver(&w));
+    refused_without_movement(&mut w, &tx, ORACLE_NOT_CANONICAL, &watched);
+
+    let usdc_price = w.usdc_price;
+    let refusals: [(solana_account::Account, &str); 6] = [
+        // Confidence interval wider than 1% of the price.
+        (usdc_update(1_000_001, UNIX_T, now, true), ORACLE_CONFIDENCE),
+        // Published more than 30 seconds ago.
+        (usdc_update(0, UNIX_T - 31, now, true), STALE_ORACLE),
+        // Posted more than 75 slots ago.
+        (usdc_update(0, UNIX_T, now - 76, true), STALE_ORACLE),
+        // Partially verified (fewer guardian signatures checked).
+        (usdc_update(0, UNIX_T, now, false), BAD_ORACLE),
+        // Right address, wrong owner.
+        ({ let mut a = usdc_update(0, UNIX_T, now, true); a.owner = pk(SYSTEM_ID); a }, BAD_ORACLE),
+        // Right address and owner, another feed's update.
+        (pyth_update(&sol_feed(), 100_000_000, -8, 0, UNIX_T, now, true), BAD_ORACLE),
+    ];
+    for (account, code) in refusals {
+        w.h.svm.set_account(usdc_price, account).unwrap();
+        let tx = fill_tx(&w, &args, &priced(&w), deliver(&w));
+        refused_without_movement(&mut w, &tx, code, &watched);
+    }
+
+    // At exactly the bounds (1% confidence, 30 s, 75 slots) the fill settles.
+    w.h.svm.set_account(usdc_price, usdc_update(1_000_000, UNIX_T - 30, now - 75, true)).unwrap();
+    let legs = priced(&w);
+    fill(&mut w, &args, &legs, 160_000_000).expect("a fresh, confident sponsored price");
+    assert_eq!(w.h.token_balance(&w.pocket_sol), Some(160_000_000));
 }

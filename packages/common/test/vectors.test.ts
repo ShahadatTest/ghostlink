@@ -31,6 +31,7 @@ import {
   splitBytes32,
   hashToField,
   pocketPda,
+  pythPushFeedAddress,
   bindingPda,
   registryTreePda,
   toBase58,
@@ -201,5 +202,18 @@ describe("pdas", () => {
     expect(toBase58(pocketPda(BigInt(vectors.pdas.pocket.appId)).address)).toBe(
       vectors.pdas.pocket.address,
     );
+    expect(vectors.pdas.pythPushFeeds).toHaveLength(2);
+    for (const feed of vectors.pdas.pythPushFeeds) {
+      expect(toBase58(pythPushFeedAddress(hexToBytes(feed.feedId)).address)).toBe(feed.address);
+    }
+  });
+
+  it("derives Pyth's published sponsored account for SOL/USD", () => {
+    // docs.pyth.network lists 7UVi…jLiE as the Solana shard-0 SOL/USD price feed account.
+    const solUsd = hexToBytes("ef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d");
+    expect(toBase58(pythPushFeedAddress(solUsd).address)).toBe("7UVimffxr9ow1uXYxsr4LHAcV58mLzhmwaeKvJ1pjLiE");
+    expect(toBase58(pythPushFeedAddress(solUsd, 1).address)).not.toBe("7UVimffxr9ow1uXYxsr4LHAcV58mLzhmwaeKvJ1pjLiE");
+    expect(() => pythPushFeedAddress(solUsd.subarray(1))).toThrow(/32 bytes/);
+    expect(() => pythPushFeedAddress(solUsd, 65_536)).toThrow(/u16/);
   });
 });

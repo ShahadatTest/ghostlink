@@ -85,7 +85,7 @@ import { buildServer as buildIndexer } from "@ghostlink/indexer/server";
 import { Poller } from "@ghostlink/indexer/poller";
 import { startRelayerFixture } from "./relayer-session.js";
 import { buildServer as buildActions } from "@ghostlink/actions/server";
-import { label, priceAccountFor } from "./genesis.js";
+import { label, pushFeedAccount } from "./genesis.js";
 import { startBotFixture } from "./bot-session.js";
 import { startSolverFixture } from "./solver-session.js";
 import { JupiterForkPlanner, loadJupiterFixture, syncNative } from "./jupiter-fixture.js";
@@ -243,10 +243,11 @@ async function main() {
       await settleRelayer(error.operation);
     }
   };
-  // Synthetic Pyth accounts loaded by this disposable validator's genesis.
+  // Synthetic Pyth accounts loaded by this disposable validator's genesis, at the
+  // sponsored push-feed addresses the pocket pins for the policy's feed ids.
   const priceAccounts: Record<string, string> = {
-    [inputMint.toBase58()]: priceAccountFor("e2e usdc price acct").toBase58(),
-    [outputMint.toBase58()]: priceAccountFor("e2e sol price acct").toBase58(),
+    [inputMint.toBase58()]: pushFeedAccount("usdc pyth feed").toBase58(),
+    [outputMint.toBase58()]: pushFeedAccount("sol pyth feed").toBase58(),
   };
   if (speculative) delete priceAccounts[outputMint.toBase58()];
   const usdcFeedId = label("usdc pyth feed");

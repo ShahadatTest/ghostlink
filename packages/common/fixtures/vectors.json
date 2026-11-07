@@ -307,6 +307,18 @@
     "fillState": {
       "address": "DSobU9o4wDYr7iob5F8WdLyfRDsEwQdv7Nfe71sdJAVy",
       "bump": 255
-    }
+    },
+    "pythPushFeeds": [
+      {
+        "feedId": "e534f87763647d9a194c27b28dbf2fcc004aff2ddda15817243f49d5e398ef7b",
+        "address": "CKgXmqV4kX3TFvMYhxs2o6sqGccA25nkZCDbnxBSqUpP",
+        "bump": 255
+      },
+      {
+        "feedId": "24cdf4712801bf7f8ed5dd135f027755ee00c14e6bcfe3b952b8a67139ad578a",
+        "address": "J7UYhtcvdk3xyi7YG2hTGmyyKdkXrdCe9hAPtpLQSdj6",
+        "bump": 255
+      }
+    ]
   }
 }

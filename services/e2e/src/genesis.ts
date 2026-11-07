@@ -1,25 +1,28 @@
 /**
  * Generates genesis account files for solana-test-validator: two fake
- * Pyth PriceUpdateV2 accounts (USDC at $1.00, SOL-token at $156.25) at
- * deterministic addresses, owned by the Pyth receiver program. Localnet
- * has no real Pyth, and these accounts can only exist at genesis because
- * only the receiver program could create them later.
+ * Pyth PriceUpdateV2 accounts (USDC at $1.00, SOL-token at $156.25),
+ * owned by the Pyth receiver program, at the sponsored push-feed
+ * addresses the pocket pins for their feed ids. Localnet has no real
+ * Pyth, and these accounts can only exist at genesis because only the
+ * receiver program could create them later.
  *
  * Usage: node dist/genesis.js <outDir>
  */
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { Keypair } from "@solana/web3.js";
+import { PublicKey } from "@solana/web3.js";
 import { sha256 } from "@noble/hashes/sha256";
+import { PYTH_RECEIVER_PROGRAM_ID, pythPushFeedAddress } from "@ghostlink/common";
 import { writeWatcherGenesis } from "./watcher-fixture.js";
 
-export const PYTH_RECEIVER = "rec5EKMGg6MxZYaMdyBfgwp4d5rB9T1VQH5pJv5LtFJ";
+export const PYTH_RECEIVER = PYTH_RECEIVER_PROGRAM_ID;
 const PRICE_UPDATE_V2_DISC = [34, 241, 35, 99, 157, 126, 244, 205];
 
 export const label = (name: string): Uint8Array =>
   sha256(new TextEncoder().encode(`ghostlink vector: ${name}`));
 
-export const priceAccountFor = (tag: string) => Keypair.fromSeed(label(tag)).publicKey;
+/** The shard-0 push-feed account of a fixture feed: the only address the pocket accepts. */
+export const pushFeedAccount = (feed: string) => new PublicKey(pythPushFeedAddress(label(feed)).address);
 
 export function pythAccountData(feedId: Uint8Array, price: bigint, exponent: number, publishTime: bigint): Buffer {
   const buf = Buffer.alloc(8 + 32 + 1 + 32 + 8 + 8 + 4 + 8 + 8 + 8 + 8 + 8);
@@ -44,6 +47,11 @@ export function pythAccountData(feedId: Uint8Array, price: bigint, exponent: num
   buf.writeBigInt64LE(price, off); // ema price
   off += 8;
   buf.writeBigUInt64LE(0n, off); // ema conf
+  off += 8;
+  // Posted slot. Genesis accounts cannot be refreshed during the run, so
+  // like the far-future publish time this keeps the freshness checks quiet;
+  // the receiver itself always records the current slot.
+  buf.writeBigUInt64LE(0xffff_ffff_ffff_ffffn, off);
   return buf;
 }
 
@@ -54,12 +62,12 @@ export function writeGenesisAccounts(outDir: string): { usdcPrice: string; solPr
   const entries = [
     {
       file: "usdc-price.json",
-      pubkey: priceAccountFor("e2e usdc price acct"),
+      pubkey: pushFeedAccount("usdc pyth feed"),
       data: pythAccountData(label("usdc pyth feed"), 100_000_000n, -8, publishTime),
     },
     {
       file: "sol-price.json",
-      pubkey: priceAccountFor("e2e sol price acct"),
+      pubkey: pushFeedAccount("sol pyth feed"),
       data: pythAccountData(label("sol pyth feed"), 15_625_000_000n, -8, publishTime),
     },
   ];
