@@ -20,7 +20,7 @@ export function readCensusFee(info: AccountInfo<Uint8Array> | null, expectedProg
   return fee;
 }
 /** Discriminator plus current Pocket::INIT_SPACE, including the speculative ledger and spending windows. */
-export const POCKET_ACCOUNT_SIZE = 3685;
+export const POCKET_ACCOUNT_SIZE = 3693;
 /** Fixed entries in the speculative ledger (programs/pocket/src/speculative.rs MAX_POSITIONS). */
 const POCKET_POSITIONS = 8;
 /** programs/pocket/src/window.rs: hourly buckets, the current hour plus the 24 before it. */
@@ -62,6 +62,8 @@ export interface PocketAccountState {
   sessionKind: number;
   sessionKey: Uint8Array;
   sessionExpirySlot: bigint;
+  /** Raised by every revoke; session authorizations bind it (pocketAuthorizationEpoch reads it directly). */
+  authorizationEpoch: bigint;
   policy: Policy;
   pending?: { change: { home: PublicKey } | { policy: Policy }; executableAfterSlot: bigint };
   /** Priced spending (USD e6) against the daily cap. */
@@ -144,6 +146,7 @@ export function readPocketAccount(info: AccountInfo<Uint8Array>, expectedProgram
   const sessionKind = u8();
   const sessionKey = take(33);
   const sessionExpirySlot = u64();
+  const authorizationEpoch = u64();
   const policy = readPolicy();
   const hasPending = u8();
   let pending: { change: { home: PublicKey } | { policy: Policy }; executableAfterSlot: bigint } | undefined;
@@ -161,8 +164,8 @@ export function readPocketAccount(info: AccountInfo<Uint8Array>, expectedProgram
   const speculativeBuys = rollingWindow();
   const speculativePositions = Array.from({ length: POCKET_POSITIONS }, () => ({ mint: key(), baseMint: key(),
     tokenAccount: key(), quantity: u64(), costUsdE6: u64() })).filter(p => p.quantity > 0n);
-  return { speculativeBuys, speculativePositions, appId, domainHash, home, sessionKind, sessionKey, sessionExpirySlot, policy, pending,
-    spending, nonceBitmap, bump, maxSessionExpirySlot, nonceBase, ownerActionNonce };
+  return { speculativeBuys, speculativePositions, appId, domainHash, home, sessionKind, sessionKey, sessionExpirySlot, authorizationEpoch,
+    policy, pending, spending, nonceBitmap, bump, maxSessionExpirySlot, nonceBase, ownerActionNonce };
 }
 
 /**
@@ -183,7 +186,7 @@ export function encodePocketAccount(
   if (positions.length > POCKET_POSITIONS) throw new Error("too many speculative positions");
   const w = new BorshWriter().fixed(POCKET_DISC, 8).fixed(state.appId, 32).fixed(state.domainHash ?? zero(32), 32)
     .fixed(state.home.toBytes(), 32).u8(state.sessionKind ?? 0).fixed(state.sessionKey ?? zero(33), 33)
-    .u64(state.sessionExpirySlot ?? 0n);
+    .u64(state.sessionExpirySlot ?? 0n).u64(state.authorizationEpoch ?? 0n);
   writePolicy(w, state.policy);
   w.option(state.pending, (writer, pending) => {
     if ("home" in pending.change) writer.u8(0).fixed(pending.change.home.toBytes(), 32);

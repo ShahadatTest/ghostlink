@@ -53,6 +53,11 @@ describe.skipIf(!built)("verifyLogin", () => {
     deployment.pocketProgram[0] ^= 1;
     expect((await verifyLogin({ ...request, expect: { pocket: { ...pocket, deployment } } })).ok).toBe(false);
     expect((await verifyLogin({ ...request, expect: { pocket: { ...pocket, policy: { ...policy, dailyCapUsdE6: policy.dailyCapUsdE6 + 1n } } } })).ok).toBe(false);
+    // The fixture authorizes a pocket that was never revoked; a revoke raises the epoch and retires it.
+    expect((await verifyLogin({ ...request, expect: { pocket: { ...pocket, authorizationEpoch: 0n } } })).ok).toBe(true);
+    const revoked = await verifyLogin({ ...request, expect: { pocket: { ...pocket, authorizationEpoch: 1n } } });
+    expect(revoked).toMatchObject({ ok: false, reason: expect.stringMatching(/revocation epoch/) });
+    expect((await verifyLogin({ ...request, expect: { pocket: { ...pocket, authorizationEpoch: -1n } } })).ok).toBe(false);
     const mutated = [...f.publicSignals];
     mutated[11] = "0";
     // Clearing the context cannot turn a spending proof into a login proof.

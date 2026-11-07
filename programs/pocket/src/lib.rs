@@ -22,7 +22,9 @@
 //!   snapshotted, and measures a wrapped-SOL account in lamports, so its
 //!   unsynced lamports are part of the snapshot;
 //! - a captured `open_session` cannot be replayed: each session must
-//!   expire later than every session before it.
+//!   expire later than every session before it;
+//! - a revoke retires every session authorization issued before it: each
+//!   binds the pocket's authorization epoch, which every revoke raises.
 
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::instruction::get_stack_height;
@@ -179,11 +181,14 @@ pub mod ghostlink_pocket {
         let session_max = governing_policy.session_max_slots;
         // The prover approves the complete policy, not a relayer's choice.
         // Renewal binds the stored policy; a policy change invalidates an
-        // outstanding authorization made under the previous policy.
+        // outstanding authorization made under the previous policy. The
+        // epoch (zero for a new pocket) retires every authorization made
+        // before the last revoke.
         let authorization_context = reduce_to_field(&hashv(&[
-            b"ghostlink:open-session:v2", ctx.program_id.as_ref(),
+            b"ghostlink:open-session:v3", ctx.program_id.as_ref(),
             REGISTRY_PROGRAM_ID.as_ref(), CENSUS_PROGRAM_ID.as_ref(),
             &governing_policy.hash(), &[args.session_kind],
+            &pocket.authorization_epoch.to_le_bytes(),
         ]).to_bytes());
         require!(
             args.session_expiry_slot > clock.slot
@@ -218,8 +223,9 @@ pub mod ghostlink_pocket {
 
         // Replay guard: the proof binds (key, expiry), and anyone who saw
         // this instruction could resend it. Demanding a strictly later
-        // expiry than every earlier session makes a resend worthless —
-        // in particular it can never undo a revoke.
+        // expiry than every earlier session makes a resend worthless. A
+        // revoke is permanent through the epoch bound above, whatever
+        // expiry an earlier authorization carries.
         require!(
             args.session_expiry_slot > pocket.max_session_expiry_slot,
             PocketError::SessionReplayed
@@ -691,7 +697,9 @@ pub mod ghostlink_pocket {
         Ok(())
     }
 
-    /// Ends the session immediately. Session signature or owner proof.
+    /// Ends the session immediately and raises the authorization epoch, so
+    /// no session authorization issued before it can open a session again.
+    /// Session signature or owner proof.
     pub fn revoke_session(ctx: Context<Revoke>, auth: SessionOrOwner) -> Result<()> {
         require!(get_stack_height() == 1, PocketError::CpiForbidden);
         let pocket_key = ctx.accounts.pocket.key();
@@ -702,7 +710,10 @@ pub mod ghostlink_pocket {
         authorize(&ctx.accounts.pocket, &ctx.accounts.instructions, &ctx.accounts.registry_tree, &auth, &digest)?;
         ctx.accounts.pocket.consume_owner_action()?;
 
-        ctx.accounts.pocket.session_expiry_slot = 0;
+        let pocket = &mut ctx.accounts.pocket;
+        pocket.session_expiry_slot = 0;
+        pocket.authorization_epoch = pocket.authorization_epoch.checked_add(1)
+            .ok_or(error!(PocketError::Overflow))?;
         emit!(SessionRevoked { pocket: pocket_key });
         Ok(())
     }

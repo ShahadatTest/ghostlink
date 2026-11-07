@@ -110,8 +110,12 @@ export interface VerifyLoginParams {
     session?: SessionExpectation;
     /** The home address the client announced (32 bytes). */
     home?: Uint8Array;
-    /** Explicitly verify a pocket authorization; absent means off-chain login only. */
-    pocket?: { policy: Policy; sessionKind: number; deployment?: SessionDeployment };
+    /**
+     * Explicitly verify a pocket authorization; absent means off-chain login only.
+     * `authorizationEpoch` is the pocket's on-chain revocation epoch (default 0n,
+     * a pocket not yet created); a proof for any other epoch is refused.
+     */
+    pocket?: { policy: Policy; sessionKind: number; deployment?: SessionDeployment; authorizationEpoch?: bigint };
   };
   fetchFn?: typeof fetch;
 }
@@ -232,9 +236,10 @@ async function verifyLoginChecked(params: VerifyLoginParams): Promise<VerifyLogi
   // A website login grants no pocket authority. Callers that verify a
   // spending authorization must supply the owner-approved context.
   const pocket = params.expect?.pocket;
-  const expectedContext = pocket ? pocketAuthorizationContext(pocket.policy, pocket.sessionKind, pocket.deployment) : 0n;
+  const expectedContext = pocket
+    ? pocketAuthorizationContext(pocket.policy, pocket.sessionKind, pocket.deployment, pocket.authorizationEpoch ?? 0n) : 0n;
   if (signals.authorization_context !== expectedContext) {
-    return { ok: false, reason: "proof bound to a different authorization purpose, policy or deployment" };
+    return { ok: false, reason: "proof bound to a different authorization purpose, policy, deployment or revocation epoch" };
   }
 
   // 4. Roots must be known recent roots (stale-root control).

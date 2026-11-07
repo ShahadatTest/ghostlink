@@ -194,6 +194,22 @@ const renewProof = await snarkjs.groth16.fullProve(renewed,
 if (!(await snarkjs.groth16.verify(loginVk, renewProof.publicSignals, renewProof.proof))) throw new Error("renewal proof invalid");
 writeFileSync(join(root, "circuits/keys/login_speculative_renew_proof.json"), JSON.stringify(renewProof, null, 2) + "\n");
 
+// After one revoke the pocket's authorization epoch is 1. Owner software then
+// authorizes a fresh session key for that epoch; earlier proofs stay dead.
+const { ed25519 } = await import("@noble/curves/ed25519");
+const rotatedSeed = label("revoked pocket session seed");
+const rotatedKey = ed25519.getPublicKey(rotatedSeed);
+const afterRevoke = { ...loginFx.public, ...loginFx.private, claim_holdings: "0",
+  session_commitment: common.sessionCommitment(rotatedKey, BigInt(vectors.identity.expirySlot) + 2n).toString(),
+  authorization_context: common.pocketAuthorizationContext(fixturePolicy, 0, undefined, 1n).toString() };
+const afterRevokeProof = await snarkjs.groth16.fullProve(afterRevoke,
+  join(root, "circuits/build/login_js/login.wasm"), zkeyPath("login"));
+if (!(await snarkjs.groth16.verify(loginVk, afterRevokeProof.publicSignals, afterRevokeProof.proof))) throw new Error("after-revoke proof invalid");
+writeFileSync(join(root, "circuits/keys/login_after_revoke_proof.json"), JSON.stringify({
+  seed: Buffer.from(rotatedSeed).toString("hex"), sessionPubkey: Buffer.from(rotatedKey).toString("hex"), ...afterRevokeProof,
+}, null, 2) + "\n");
+console.log("after-revoke login proof verified");
+
 // Owner proposes returning to the conservative policy. This independent
 // Borsh encoder is cross-checked by the real compiled-program action test.
 const u32 = n => { const b = Buffer.alloc(4); b.writeUInt32LE(n); return b; };

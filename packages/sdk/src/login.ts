@@ -100,6 +100,12 @@ export function buildLoginInput(params: {
   /** Omit for off-chain login only. Pocket creation/renewal requires the approved policy. */
   policy?: Policy;
   deployment?: SessionDeployment;
+  /**
+   * The pocket's current on-chain revocation epoch (`pocketAuthorizationEpoch`);
+   * zero, the default, only creates a pocket. A revoke raises it on-chain, so a
+   * proof bound to an older epoch never opens a session.
+   */
+  authorizationEpoch?: bigint;
 }): { input: CircuitInput; appId: FieldElement; domainHash: FieldElement } {
   const { identity, origin, claim, session, expirySlot, home, witness } = params;
   const minSlot = resolveMinSlot(params);
@@ -135,7 +141,7 @@ export function buildLoginInput(params: {
     home_hash: homeHash(home).toString(),
     claim_holdings: claim ? "1" : "0",
     authorization_context: params.policy === undefined ? "0"
-      : pocketAuthorizationContext(params.policy, session.kind, params.deployment).toString(),
+      : pocketAuthorizationContext(params.policy, session.kind, params.deployment, params.authorizationEpoch ?? 0n).toString(),
     s: identity.sField.toString(),
     pk_hi: pk.hi.toString(),
     pk_lo: pk.lo.toString(),

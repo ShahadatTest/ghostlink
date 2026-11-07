@@ -20,12 +20,15 @@ const UNIX_T: i64 = 1_800_000_000;
 const TIMELOCK_SLOTS: u64 = 216_000;
 
 // Custom error codes: 6000 + the variant's position in PocketError.
+const PROOF_INVALID: &str = "Custom(6002)";
+const WRONG_SIGNER: &str = "Custom(6019)";
 const OUTPUT_TOO_LOW: &str = "Custom(6029)";
 const BAD_ORACLE: &str = "Custom(6031)";
 const STALE_ORACLE: &str = "Custom(6032)";
 const BAD_TOKEN_ACCOUNT: &str = "Custom(6033)";
 const POSITIONS_OPEN: &str = "Custom(6046)";
 const DAILY_CAP_EXCEEDED: &str = "Custom(6026)";
+const SESSION_REPLAYED: &str = "Custom(6039)";
 const FREEZABLE_MINT: &str = "Custom(6047)";
 const ORACLE_NOT_CANONICAL: &str = "Custom(6048)";
 const ORACLE_CONFIDENCE: &str = "Custom(6049)";
@@ -174,7 +177,11 @@ fn intent_hash(w: &World, args: &IntentArgs) -> [u8; 32] {
 }
 
 fn session_sig(w: &World, digest: &[u8; 32]) -> Instruction {
-    ed25519_ix(&w.session.pubkey().to_bytes(), &sign64(&w.session, digest), digest)
+    signed_by(&w.session, digest)
+}
+
+fn signed_by(key: &Keypair, digest: &[u8; 32]) -> Instruction {
+    ed25519_ix(&key.pubkey().to_bytes(), &sign64(key, digest), digest)
 }
 
 /// The accounts one fill touches; `None` prices mean "this leg is unpriced".
@@ -194,6 +201,11 @@ fn priced(w: &World) -> Legs {
 
 /// [session signature, fill_begin, the solver's delivery..., fill_end].
 fn fill_tx(w: &World, args: &IntentArgs, legs: &Legs, route: Vec<Instruction>) -> Vec<Instruction> {
+    fill_tx_signed(w, &w.session, args, legs, route)
+}
+
+/// Like `fill_tx`, with the intent signed by `signer`.
+fn fill_tx_signed(w: &World, signer: &Keypair, args: &IntentArgs, legs: &Legs, route: Vec<Instruction>) -> Vec<Instruction> {
     #[derive(borsh::BorshSerialize)]
     struct BeginArgs(IntentArgs, Option<WebauthnData>);
     let fill_state = pda(&[b"fill", w.pocket.as_ref(), &args.nonce.to_le_bytes()], &pk(POCKET_ID));
@@ -208,7 +220,7 @@ fn fill_tx(w: &World, args: &IntentArgs, legs: &Legs, route: Vec<Instruction>) -
         // Anchor optional account: the program id itself means None.
         meta_r(legs.out_price.unwrap_or_else(|| pk(POCKET_ID)))],
         data: ix_data("fill_end", args) };
-    let mut tx = vec![session_sig(w, &intent_hash(w, args)), begin];
+    let mut tx = vec![signed_by(signer, &intent_hash(w, args)), begin];
     tx.extend(route);
     tx.push(end);
     tx
@@ -320,7 +332,7 @@ fn policy_len(data: &[u8], at: usize) -> usize {
 }
 
 fn layout(data: &[u8]) -> Layout {
-    let policy = 8 + 32 + 32 + 32 + 1 + 33 + 8;
+    let policy = 8 + 32 + 32 + 32 + 1 + 33 + 8 + 8; // through the revocation epoch
     let mut off = policy + policy_len(data, policy);
     off += match (data[off], data[off + 1]) {
         (0, _) => 1,
@@ -695,4 +707,97 @@ fn the_daily_cap_cannot_be_exceeded_across_a_window_boundary() {
     }
     assert_eq!(spent_in_window(&w), 200_000_000);
     refused(spend_25(&mut w));
+}
+
+// ---- Finding 4: revocation epoch ---------------------------------------------
+
+/// The pocket's revocation epoch, at its fixed offset after the session fields.
+fn authorization_epoch(w: &World) -> u64 {
+    let data = w.h.account_data(&w.pocket).unwrap();
+    u64::from_le_bytes(data[146..154].try_into().unwrap())
+}
+
+fn session_expiry(w: &World) -> u64 {
+    let data = w.h.account_data(&w.pocket).unwrap();
+    u64::from_le_bytes(data[138..146].try_into().unwrap())
+}
+
+fn revoke_ix(w: &World, auth: SessionOrOwner) -> Instruction {
+    Instruction { program_id: pk(POCKET_ID), accounts: vec![AccountMeta::new(w.h.payer.pubkey(), true),
+        meta_w(w.pocket), meta_r(w.registry_tree), meta_r(pk(SYSVAR_IX_ID))], data: ix_data("revoke_session", &auth) }
+}
+
+/// The committed passkey rotation: authorized for epoch 0, expiring later
+/// than the live session, never submitted.
+fn held_rotation(w: &World) -> OpenSessionArgs {
+    let fx = load_json("circuits/keys/login_p256_proof.json");
+    let mut args = open_session_args(w, "circuits/keys/login_p256_proof.json", EXPIRY_SLOT + 1, false);
+    args.session_kind = 1;
+    args.session_key = hexv(fx["compressedPubkey"].as_str().unwrap()).try_into().unwrap();
+    args
+}
+
+/// Whether `instructions` would succeed now, tried on a copy of the chain.
+fn succeeds_on_a_copy(w: &World, instructions: &[Instruction]) -> bool {
+    let mut copy = w.h.svm.clone();
+    copy.expire_blockhash();
+    let message = solana_message::Message::new(instructions, Some(&w.h.payer.pubkey()));
+    copy.send_transaction(solana_transaction::Transaction::new(&[&w.h.payer], message, copy.latest_blockhash())).is_ok()
+}
+
+#[test]
+fn a_revoke_retires_every_session_authorization_issued_before_it() {
+    let mut w = world(false);
+    assert_eq!(authorization_epoch(&w), 0);
+    let held = held_rotation(&w);
+    let open_held = [compute_budget(400_000), open_session_ix(&w, &held)];
+    assert!(succeeds_on_a_copy(&w, &open_held), "before the revoke the held authorization opens its session");
+    // An earlier session's authorization is refused by the expiry replay guard.
+    let replay = open_session_args(&w, "circuits/keys/login_proof.json", EXPIRY_SLOT, false);
+    let err = w.h.send_expect_err(&[compute_budget(400_000), open_session_ix(&w, &replay)], &[]);
+    assert!(err.contains(SESSION_REPLAYED), "{err}");
+
+    let revoke = revoke_ix(&w, SessionOrOwner::Owner(owner_proof("revoke")));
+    w.h.send(&[compute_budget(400_000), revoke], &[]).expect("owner revoke");
+    assert_eq!((authorization_epoch(&w), session_expiry(&w)), (1, 0));
+
+    // Issued before the revoke, it can never open a session afterwards,
+    // although it expires later than any session the pocket has had.
+    let err = w.h.send_expect_err(&open_held, &[]);
+    assert!(err.contains(PROOF_INVALID), "{err}");
+    let err = w.h.send_expect_err(&[compute_budget(400_000), open_session_ix(&w, &replay)], &[]);
+    assert!(err.contains(PROOF_INVALID), "{err}");
+    assert_eq!((authorization_epoch(&w), session_expiry(&w)), (1, 0), "still revoked");
+
+    // Owner software proves for the current epoch, with a fresh key.
+    let rotated = Keypair::new_from_array(label("revoked pocket session seed"));
+    let mut fresh = open_session_args(&w, "circuits/keys/login_after_revoke_proof.json", EXPIRY_SLOT + 2, false);
+    fresh.claim_holdings = false;
+    fresh.session_key[..32].copy_from_slice(&rotated.pubkey().to_bytes());
+    w.h.send(&[compute_budget(400_000), open_session_ix(&w, &fresh)], &[]).expect("an authorization for epoch 1");
+    assert_eq!(session_expiry(&w), EXPIRY_SLOT + 2);
+
+    // The revoked key's intents stay dead; the new key trades.
+    let args = intent(&w, 7, w.usdc, 25_000_000, w.sol, 160_000_000);
+    let legs = priced(&w);
+    let route = || vec![spl_transfer(&w.solver_sol, &w.pocket_sol, &w.solver.pubkey(), 160_000_000)];
+    let stale = fill_tx(&w, &args, &legs, route());
+    let fresh_fill = fill_tx_signed(&w, &rotated, &args, &legs, route());
+    let watched = [w.pocket_usdc, w.pocket_sol];
+    refused_without_movement(&mut w, &stale, WRONG_SIGNER, &watched);
+    let solver = w.solver.clone();
+    w.h.send(&fresh_fill, &[&solver]).expect("the post-revoke session trades");
+    assert_eq!(w.h.token_balance(&w.pocket_sol), Some(160_000_000));
+}
+
+#[test]
+fn a_session_signed_revoke_raises_the_epoch_too() {
+    let mut w = world(false);
+    let digest = sha(&[b"ghostlink:revoke:v1", w.pocket.as_ref(), &0u64.to_le_bytes()]);
+    let tx = [session_sig(&w, &digest), revoke_ix(&w, SessionOrOwner::Session { webauthn: None })];
+    w.h.send(&tx, &[]).expect("the session revokes itself");
+    assert_eq!((authorization_epoch(&w), session_expiry(&w)), (1, 0));
+    let held = held_rotation(&w);
+    let err = w.h.send_expect_err(&[compute_budget(400_000), open_session_ix(&w, &held)], &[]);
+    assert!(err.contains(PROOF_INVALID), "{err}");
 }

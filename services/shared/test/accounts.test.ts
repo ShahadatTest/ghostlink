@@ -3,7 +3,7 @@ import { sha256 } from "@noble/hashes/sha256";
 import { SystemProgram } from "@solana/web3.js";
 import { BorshWriter, POCKET, POCKET_ACCOUNT_SIZE, encodePocketAccount, isPocketAccount, isPocketNonceUsed, readPocketAccount,
   rollingWindowTotal, writePolicy } from "../src/index.js";
-import type { Policy } from "@ghostlink/common";
+import { pocketAuthorizationEpoch, type Policy } from "@ghostlink/common";
 
 const appId = new Uint8Array(32).fill(3);
 const policy: Policy = { dailyCapUsdE6: 1n, maxSlippageBps: 100, bigActionThresholdUsdE6: 2n, noOracleCapUsdE6: 0n,
@@ -28,7 +28,7 @@ describe("Pocket account decoding", () => {
           baseMints: [policy.oracleFeeds[0]!.mint] } } : policy;
       const w = new BorshWriter().fixed(sha256(new TextEncoder().encode("account:PocketV3")).subarray(0, 8))
         .fixed(appId).fixed(new Uint8Array(32)).fixed(SystemProgram.programId.toBytes())
-        .u8(0).fixed(new Uint8Array(33)).u64(100n);
+        .u8(0).fixed(new Uint8Array(33)).u64(100n).u64(4n); // session expiry, revocation epoch
       writePolicy(w, chosen);
       w.option(pending, (writer, value) => {
         if (value === "home") writer.u8(0).fixed(SystemProgram.programId.toBytes());
@@ -49,6 +49,8 @@ describe("Pocket account decoding", () => {
       data.set(w.out());
       const info = { owner: POCKET, data, executable: false, lamports: 1, rentEpoch: 0 };
       expect(readPocketAccount(info).ownerActionNonce).toBe(17n);
+      expect(readPocketAccount(info).authorizationEpoch).toBe(4n);
+      expect(pocketAuthorizationEpoch(data)).toBe(4n);
       expect(readPocketAccount(info).policy).toEqual(chosen);
       const slot = 13_741n * 9_000n;
       expect(rollingWindowTotal(readPocketAccount(info).speculativeBuys, slot)).toBe(9n);
@@ -69,11 +71,12 @@ describe("Pocket account decoding", () => {
   it("encodes fixture accounts that decode to the same state", () => {
     const home = SystemProgram.programId, position = { mint: home, baseMint: POCKET, tokenAccount: POCKET, quantity: 4n, costUsdE6: 5n };
     const spending = { latestBucket: 14n, amounts: Array.from({ length: 25 }, (_, i) => BigInt(i)) };
-    const state = { appId, home, policy, bump: 7, sessionExpirySlot: 9n, nonceBase: 10n, ownerActionNonce: 11n,
+    const state = { appId, home, policy, bump: 7, sessionExpirySlot: 9n, authorizationEpoch: 3n, nonceBase: 10n, ownerActionNonce: 11n,
       pending: { change: { policy }, executableAfterSlot: 12n }, speculativePositions: [position], spending };
     const data = encodePocketAccount(state);
     const decoded = readPocketAccount({ owner: POCKET, data, executable: false, lamports: 1, rentEpoch: 0 });
-    expect([decoded.bump, decoded.sessionExpirySlot, decoded.nonceBase, decoded.ownerActionNonce]).toEqual([7, 9n, 10n, 11n]);
+    expect([decoded.bump, decoded.sessionExpirySlot, decoded.authorizationEpoch, decoded.nonceBase, decoded.ownerActionNonce])
+      .toEqual([7, 9n, 3n, 10n, 11n]);
     expect(Buffer.from(decoded.appId).equals(Buffer.from(appId)) && decoded.home.equals(home)).toBe(true);
     expect(decoded.pending?.executableAfterSlot).toBe(12n);
     expect(decoded.speculativePositions).toEqual([position]);

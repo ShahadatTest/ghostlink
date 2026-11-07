@@ -34,6 +34,13 @@ export interface OwnerConsentOptions {
   registry: ApplicationRegistry;
   /** Trusted confirmed RPC reader. Pass minContextSlot to RPCs supporting it. */
   readChainContext(minContextSlot: number): Promise<{ genesisHash: string; slot: number }>;
+  /**
+   * The same trusted reader for the pocket's revocation epoch at or after
+   * minContextSlot: `pocketAuthorizationEpoch(data)` of the pocket-program-owned
+   * account, or 0n while the pocket does not exist. Every proof binds it, so a
+   * revoke invalidates all proofs released before it.
+   */
+  readAuthorizationEpoch(pocket: string, minContextSlot: number): Promise<bigint>;
   nowSeconds?: () => number;
   /** Node tests/native integrations only. Browser context always uses its real, top-level origin. */
   nodeOwnerOrigin?: string;
@@ -60,6 +67,7 @@ function freeze<T>(value: T): ReadonlyDeep<T> {
 export class OwnerConsentController {
   #registry: ApplicationRegistry;
   #chain: OwnerConsentOptions["readChainContext"];
+  #epochOf: OwnerConsentOptions["readAuthorizationEpoch"];
   #clock: () => number;
   #nodeOrigin?: string;
   #slot = 0;
@@ -69,6 +77,8 @@ export class OwnerConsentController {
   constructor(options: OwnerConsentOptions) {
     this.#registry = options.registry;
     this.#chain = options.readChainContext;
+    if (typeof options.readAuthorizationEpoch !== "function") throw new Error("a trusted authorization epoch reader is required");
+    this.#epochOf = options.readAuthorizationEpoch;
     this.#clock = options.nowSeconds ?? (() => Math.floor(Date.now() / 1000));
     this.#nodeOrigin = options.nodeOwnerOrigin;
   }
@@ -90,6 +100,11 @@ export class OwnerConsentController {
     if (head.slot < this.#slot) throw new Error("owner RPC context regressed");
     this.#slot = head.slot;
     return BigInt(head.slot);
+  }
+  async #epoch(pocket: string, minContextSlot: bigint): Promise<bigint> {
+    const epoch = await this.#epochOf(pocket, Number(minContextSlot));
+    if (typeof epoch !== "bigint" || epoch < 0n || epoch >= 1n << 64n) throw new Error("invalid pocket authorization epoch");
+    return epoch;
   }
   #current(review: OwnerConsentReview, record: ReviewState, expected: ReviewState["state"]): void {
     this.#context();
@@ -159,9 +174,12 @@ export class OwnerConsentController {
       const slot = await this.#head(c.deployment);
       this.#current(review, record, "proving");
       if (expirySlot <= slot) throw new Error("bot session expired before proving");
+      // Bind the pocket's current revocation epoch, never one a partner supplied.
+      const authorizationEpoch = await this.#epoch(c.pocket, slot);
+      this.#current(review, record, "proving");
       const session = sessionPublicKey(0, hexToBytes(c.sessionKeyHex));
       const built = buildLoginInput({ identity, witness, claim, minSlot, currentSlot: slot, session, expirySlot,
-        origin: c.appOrigin, home: bs58.decode(c.home), policy: policyFromDto(c.policy), deployment: {
+        origin: c.appOrigin, home: bs58.decode(c.home), policy: policyFromDto(c.policy), authorizationEpoch, deployment: {
           pocketProgram: bs58.decode(c.deployment.pocketProgram), registryProgram: bs58.decode(c.deployment.registryProgram),
           censusProgram: bs58.decode(c.deployment.censusProgram),
         } });
@@ -172,10 +190,13 @@ export class OwnerConsentController {
         throw new Error("prover returned a different authorization");
       }
       this.#current(review, record, "proving");
-      if (expirySlot <= await this.#head(c.deployment)) throw new Error("bot session expired during proving");
+      const after = await this.#head(c.deployment);
+      if (expirySlot <= after) throw new Error("bot session expired during proving");
+      if (await this.#epoch(c.pocket, after) !== authorizationEpoch) throw new Error("pocket was revoked during proving; review again");
       this.#current(review, record, "proving");
       record.state = "released";
-      return { appId: built.appId, appIdBase58: toBase58(fieldToBytes32(built.appId)), proof, signer: session, expirySlot };
+      return { appId: built.appId, appIdBase58: toBase58(fieldToBytes32(built.appId)), proof, signer: session, expirySlot,
+        authorizationEpoch };
     } catch (error) {
       record.state = "failed";
       throw error;

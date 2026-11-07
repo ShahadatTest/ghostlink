@@ -21,10 +21,12 @@ The candidate accepts only the existing local program IDs and a pinned disposabl
 3. Derive the identity locally in the owner context. Derive `appId(identity.sField, domainHash(application.appOrigin))`. Choose the recovery home and session expiry in the owner UI. For renewal, read the confirmed existing pocket and use its current policy/home and a strictly later expiry. Do not silently replace an existing session or change permissions.
 4. Send only `{ requestKey, appId, home, sessionExpirySlot }` to the registered backend's `/requests`, with raw `initData` in the authorization header. Use a random idempotency key and preserve it for retries. Enforce response size/time limits, `redirect: "error"` and `cache: "no-store"`; never redirect authentication to an unregistered host. The backend returns a public pending consent.
 5. Pass that response and the locally selected expectations to `controller.review`. It verifies the bot/user, deployment, derived pocket, home, exact approved policy, Ed25519 key, expiry and fresh chain context. Display the returned immutable review, including bot identity, origin, policy amounts/assets, expiry and recovery home. Require an explicit owner approval before proving.
-6. Call `controller.prove` with the same review object, identity, verified witnesses and local prover. Additional holdings claims need their own clear disclosure. The controller checks all 12 proof public signals and rechecks registry, cancellation, time, genesis and chain progress before returning authorization. It releases each review at most once. It does not send private inputs anywhere or submit a transaction.
+6. Call `controller.prove` with the same review object, identity, verified witnesses and local prover. Additional holdings claims need their own clear disclosure. The controller binds the proof to the pocket's current revocation epoch, read through `readAuthorizationEpoch` (zero before the pocket exists): a revoke makes every proof made before it unusable, so a proof cannot outlive a revocation ([ADR 0006](adr/0006-pocket-hardening.md)). It checks all 12 proof public signals and rechecks registry, cancellation, time, genesis, chain progress and the epoch before returning authorization; a revoke that lands while proving fails the review. It releases each review at most once. It does not send private inputs anywhere or submit a transaction.
 7. Use `client.pocketFor` and `client.openSession` with the returned authorization and reviewed policy/home. Keep the relayer/indexer/RPC endpoints in trusted owner configuration. After submission, ask the bot backend to confirm; it checks the actual confirmed account. A released proof, HTTP success or transaction signature alone is not activation evidence.
 
 ```ts
+import { PublicKey } from '@solana/web3.js';
+import { POCKET_PROGRAM_ID, pocketAuthorizationEpoch } from '@ghostlink/common';
 import { OwnerConsentController, policyFromDto } from '@ghostlink/sdk';
 
 // registry, connection and localProver are trusted owner configuration.
@@ -34,6 +36,13 @@ const controller = new OwnerConsentController({
     genesisHash: await connection.getGenesisHash(),
     slot: await connection.getSlot({ commitment: 'confirmed', minContextSlot }),
   }),
+  // The same trusted RPC: the pocket's revocation epoch, 0n before the pocket exists.
+  readAuthorizationEpoch: async (pocket, minContextSlot) => {
+    const account = await connection.getAccountInfo(new PublicKey(pocket), { commitment: 'confirmed', minContextSlot });
+    if (!account) return 0n;
+    if (!account.owner.equals(new PublicKey(POCKET_PROGRAM_ID))) throw new Error('unexpected pocket owner');
+    return pocketAuthorizationEpoch(account.data);
+  },
 });
 const review = await controller.review(botResponse, {
   applicationId, telegramUserId: authenticatedTelegram.userId,

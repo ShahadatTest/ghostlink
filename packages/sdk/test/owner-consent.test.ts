@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import bs58 from "bs58";
 import {
-  appId, domainHash, hexToBytes, pocketPda, toBase58, CENSUS_PROGRAM_ID, POCKET_PROGRAM_ID, REGISTRY_PROGRAM_ID,
+  appId, domainHash, hexToBytes, pocketAuthorizationContext, pocketPda, toBase58, CENSUS_PROGRAM_ID, POCKET_PROGRAM_ID, REGISTRY_PROGRAM_ID,
   type BotConsentStatus,
 } from "@ghostlink/common";
 import {
@@ -34,7 +34,9 @@ function setup() {
     ] };
   const registry = new ApplicationRegistry(manifest, applicationRegistryDigest(manifest));
   const readChainContext = vi.fn(async (_floor: number) => ({ genesisHash: deployment.genesisHash, slot }));
-  const controller = new OwnerConsentController({ registry, readChainContext, nowSeconds: () => now, nodeOwnerOrigin: origin });
+  const readAuthorizationEpoch = vi.fn(async (_pocket: string, _floor: number) => 0n);
+  const controller = new OwnerConsentController({ registry, readChainContext, readAuthorizationEpoch, nowSeconds: () => now,
+    nodeOwnerOrigin: origin });
   const id = appId(identity.sField, domainHash(vectors.identity.origin)).toString();
   const status: BotConsentStatus = { state: "pending", consent: { version: 1, id: "ab".repeat(32), botId: "123456", userId: "789",
     appOrigin: vectors.identity.origin, deployment: structuredClone(deployment), appId: id, pocket: toBase58(pocketPda(BigInt(id)).address),
@@ -48,7 +50,7 @@ function setup() {
   const prover = { prove: vi.fn(async () => structuredClone(fixture)) };
   const params = { identity, witness, prover, minSlot: BigInt(fx.public.min_slot),
     claim: { kind: "holdsAtLeast" as const, mint: hexToBytes(vectors.census.mint), amount: BigInt(fx.public.threshold), maxAgeSlots: 9000n } };
-  return { manifest, registry, controller, readChainContext, expected, status, params,
+  return { manifest, registry, controller, readChainContext, readAuthorizationEpoch, expected, status, params,
     setNow: (n: number) => { now = n; }, setSlot: (n: number) => { slot = n; } };
 }
 afterEach(() => vi.unstubAllGlobals());
@@ -65,6 +67,8 @@ describe("trusted owner consent", () => {
     f.status.consent.home = bs58.encode(new Uint8Array(32).fill(77)); // Wire response is snapshotted.
     const authorization = await f.controller.prove(review, f.params);
     expect(f.params.prover.prove.mock.calls[0]?.[1]).toEqual({ ...vectors.circuits.login.public, ...vectors.circuits.login.private });
+    expect(authorization.authorizationEpoch).toBe(0n);
+    expect(f.readAuthorizationEpoch).toHaveBeenCalledWith(f.status.consent.pocket, expect.any(Number));
     expect(authorization.signer).not.toHaveProperty("sign");
     expect(JSON.stringify(review)).not.toContain(vectors.identity.sBytes);
     expect((await verifyLogin({ proof: authorization.proof.snarkjsProof, publicSignals: authorization.proof.publicSignals,
@@ -121,6 +125,29 @@ describe("trusted owner consent", () => {
       await expect(f.controller.prove(review, f.params)).rejects.toThrow(/top-level/);
     }
     expect(f.params.prover.prove).not.toHaveBeenCalled();
+  });
+
+  it("binds the pocket's current revocation epoch and fails a review revoked while proving", async () => {
+    const f = setup(), review = await f.controller.review(f.status, f.expected);
+    f.readAuthorizationEpoch.mockResolvedValue(3n);
+    // The committed fixture proves epoch zero, so the controller refuses to release it for epoch three.
+    await expect(f.controller.prove(review, f.params)).rejects.toThrow(/different authorization/);
+    expect(f.params.prover.prove.mock.calls[0]?.[1]).toMatchObject({
+      authorization_context: pocketAuthorizationContext(fixturePolicy(), 0, undefined, 3n).toString() });
+
+    const g = setup(), revoked = await g.controller.review(g.status, g.expected);
+    g.readAuthorizationEpoch.mockResolvedValueOnce(0n).mockResolvedValueOnce(1n);
+    await expect(g.controller.prove(revoked, g.params)).rejects.toThrow(/revoked during proving/);
+    await expect(g.controller.prove(revoked, g.params)).rejects.toThrow(/no longer/);
+
+    for (const bad of [-1n, 1n << 64n, 1 as unknown as bigint]) {
+      const h = setup(), r = await h.controller.review(h.status, h.expected);
+      h.readAuthorizationEpoch.mockResolvedValue(bad);
+      await expect(h.controller.prove(r, h.params)).rejects.toThrow(/invalid pocket authorization epoch/);
+      expect(h.params.prover.prove).not.toHaveBeenCalled();
+    }
+    expect(() => new OwnerConsentController({ registry: f.registry, readChainContext: f.readChainContext } as never))
+      .toThrow(/epoch reader/);
   });
 
   it("rejects cancellation, revocation, expiration and changed prover outputs before releasing a proof", async () => {

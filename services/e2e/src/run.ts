@@ -41,6 +41,7 @@ import {
   domainHash as deriveDomainHash,
   fieldToBytes32,
   hashToField,
+  pocketAuthorizationEpoch,
   proofToBytes,
   publicSignalsToBytes,
   type Policy,
@@ -70,6 +71,7 @@ import {
 } from "@ghostlink/sdk";
 import { verifyLogin } from "@ghostlink/verify";
 import {
+  POCKET,
   REGISTRY,
   ataAddress,
   censusFeeVaultPda,
@@ -460,7 +462,14 @@ async function main() {
   const ownerRegistry = new ApplicationRegistry(ownerManifest, applicationRegistryDigest(ownerManifest));
   const ownerConsent = new OwnerConsentController({ registry: ownerRegistry, nodeOwnerOrigin: botFixture.ownerOrigin,
     readChainContext: async minContextSlot => ({ genesisHash: await connection.getGenesisHash(),
-      slot: await connection.getSlot({ commitment: "confirmed", minContextSlot }) }) });
+      slot: await connection.getSlot({ commitment: "confirmed", minContextSlot }) }),
+    // Proofs bind the pocket's revocation epoch: zero until the pocket exists, then its stored value.
+    readAuthorizationEpoch: async (address, minContextSlot) => {
+      const account = await connection.getAccountInfo(new PublicKey(address), { commitment: "confirmed", minContextSlot });
+      if (!account) return 0n;
+      if (!account.owner.equals(POCKET)) throw new Error("pocket owned by an unexpected program");
+      return pocketAuthorizationEpoch(account.data);
+    } });
   const ownerExpectations = { applicationId: "fixture-bot", telegramUserId: botFixture.userId, identity, home: home.toBytes(), expirySlot };
   const ownerProofParams = { identity, prover, claim, minSlot, witness: {
     registry: { walletPubkey: wallet.publicKey.toBytes(), ...regPath },

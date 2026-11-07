@@ -41,9 +41,10 @@ fn exit(w: &mut FillWorld, nonce: u64, quantity: u64, minimum: u64, delivered: u
 /// (speculative buys recorded in the rolling window, first position's quantity, its cost).
 fn ledger(w: &FillWorld) -> (u64, u64, u64) {
     let data = w.ctx.h.account_data(&w.ctx.pocket).unwrap();
-    assert_eq!(data.len(), 3685);
+    assert_eq!(data.len(), 3693);
     assert_eq!(&data[..8], &sha(&[b"account:PocketV3"])[..8]);
-    let policy_end = 146 + borsh::to_vec(&w.ctx.policy).unwrap().len();
+    // The revocation epoch (u64) follows the session expiry at offset 146.
+    let policy_end = 154 + borsh::to_vec(&w.ctx.policy).unwrap().len();
     let pending = if data[policy_end] == 0 { 1 } else {
         // This suite stages the conservative policy only.
         assert_eq!(data[policy_end + 1], 1);

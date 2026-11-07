@@ -781,10 +781,12 @@ fn revoked_session_cannot_be_replayed() {
     assert_eq!(u64::from_le_bytes(data[138..146].try_into().unwrap()), 0, "session revoked");
 
     // Resending the original open_session well before its expiry must
-    // not bring the session back.
+    // not bring the session back: the revoke raised the authorization
+    // epoch the proof is bound to (the expiry replay guard would also
+    // refuse it).
     set_clock(&mut w.ctx.h, FILL_SLOT + 1);
     let err = w.ctx.h.send_expect_err(&[compute_budget(400_000), open_session_ix(&w.ctx, &replay)], &[]);
-    assert!(err.contains("Custom(6039)") || err.contains("SessionReplayed"), "{err}");
+    assert!(err.contains("Custom(6002)") || err.contains("ProofInvalid"), "{err}");
     let data = w.ctx.h.account_data(&w.ctx.pocket).unwrap();
     assert_eq!(u64::from_le_bytes(data[138..146].try_into().unwrap()), 0, "still revoked");
 

@@ -79,6 +79,8 @@ export interface GhostLinkAuthorization {
   /** Public key descriptor, with no signing function or private key. */
   signer: SessionPublicKey;
   expirySlot: bigint;
+  /** The pocket revocation epoch the proof binds; any later revoke invalidates it. */
+  authorizationEpoch: bigint;
 }
 
 export interface GhostLinkSession extends GhostLinkAuthorization {
@@ -98,6 +100,11 @@ export interface SessionAuthorizationParams {
   home: Uint8Array;
   /** Exact owner-approved policy. Renewal must use the current confirmed policy. */
   policy: Policy;
+  /**
+   * The pocket's current confirmed revocation epoch (`pocketAuthorizationEpoch`).
+   * Zero, the default, only creates a pocket; renewal after a revoke needs the raised value.
+   */
+  authorizationEpoch?: bigint;
 }
 
 /**
@@ -289,6 +296,8 @@ export class GhostLink {
     home?: Uint8Array;
     /** Omit for off-chain login; supply explicitly to authorize a pocket. */
     policy?: Policy;
+    /** The pocket's confirmed revocation epoch; zero (the default) only creates a pocket. */
+    authorizationEpoch?: bigint;
   }): Promise<GhostLinkSession> {
     if (!this.config.prover) throw new Error("no prover configured");
     if (params.policy !== undefined && params.home === undefined) {
@@ -337,6 +346,7 @@ export class GhostLink {
       home: params.home,
       witness: params.witness,
       policy: params.policy,
+      authorizationEpoch: params.authorizationEpoch,
     });
     const proof = await proveLogin(this.config.prover, input, appId);
     return {
@@ -345,6 +355,7 @@ export class GhostLink {
       proof,
       signer,
       expirySlot: params.expirySlot,
+      authorizationEpoch: params.authorizationEpoch ?? 0n,
     };
   }
 
@@ -358,10 +369,11 @@ export class GhostLink {
 
   private checkPocketAuthorization(session: GhostLinkAuthorization, pocket: PocketHandle): void {
     const signals = session.proof.publicSignals;
-    if (signals.length !== 12 || fieldFromDecimal(signals[11]) !== pocketAuthorizationContext(pocket.policy, session.signer.kind)
+    const context = pocketAuthorizationContext(pocket.policy, session.signer.kind, undefined, session.authorizationEpoch ?? 0n);
+    if (signals.length !== 12 || fieldFromDecimal(signals[11]) !== context
       || fieldFromDecimal(signals[9]) !== homeHash(pocket.home)
       || fieldFromDecimal(signals[3]) !== session.appId || pocket.appId !== session.appId) {
-      throw new Error("Pocket policy, home or deployment does not match the approved V2 authorization");
+      throw new Error("Pocket policy, home, deployment or revocation epoch does not match the approved V2 authorization");
     }
   }
 

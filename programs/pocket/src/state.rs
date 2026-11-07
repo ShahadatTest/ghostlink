@@ -134,6 +134,10 @@ pub struct PocketV3 {
     pub session_kind: u8,
     pub session_key: [u8; 33],
     pub session_expiry_slot: u64,
+    /// Raised by every revoke. Each session authorization binds it, so a
+    /// revoke retires every authorization issued before it. At a fixed
+    /// offset (146) so owner software can read it without a policy decoder.
+    pub authorization_epoch: u64,
     pub policy: Policy,
     pub pending: Option<PendingChange>,
     /// Priced spending (USD e6) against the daily cap, over a rolling day.

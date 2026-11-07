@@ -60,6 +60,13 @@ describe("public bot session authorization", () => {
     });
     expect((await verify(expectedKey)).ok).toBe(true);
     expect((await verify(softwareSession().key32)).ok).toBe(false);
+    expect(authorization.authorizationEpoch).toBe(0n);
+    // An authorization claimed for a later revocation epoch than its proof binds never reaches the relayer.
+    await expect(client.openSession({ ...authorization, authorizationEpoch: 1n },
+      client.pocketFor(authorization, params.home, params.policy), {
+        mint: params.claim.mint, threshold: params.claim.amount, minSlot: params.minSlot, claim: true,
+      })).rejects.toThrow(/revocation epoch/);
+    expect(fetchFn).not.toHaveBeenCalled();
     await client.openSession(authorization, client.pocketFor(authorization, params.home, params.policy), {
       mint: params.claim.mint, threshold: params.claim.amount, minSlot: params.minSlot, claim: true,
     });

@@ -38,7 +38,7 @@ Try it with a real proof: [`examples/verify-login`](../../examples/verify-login/
 1. The public signals are well-formed field elements in the login circuit's order (`LOGIN_SIGNALS`).
 2. The proof is bound to `expectedDomain`. A proof made for another site fails.
 3. Optional claims: holdings of a mint at or above a threshold (which requires a minimum snapshot slot), a session key and expiry, and the user's announced home address.
-4. Purpose: a website login proof cannot authorize a pocket, and a pocket authorization must match the exact policy, session kind and deployment you pass in `expect.pocket`.
+4. Purpose: a website login proof cannot authorize a pocket, and a pocket authorization must match the exact policy, session kind, deployment and pocket revocation epoch (`authorizationEpoch`, default zero) you pass in `expect.pocket`.
 5. The registry root (and census root, for holdings claims) is one your root source recognises. An indexer lists one root per completed 150-slot bucket, the roots the programs keep for at least 128 buckets.
 6. The Groth16 proof verifies against the login verifying key bundled in `keys/login_vk.json`.
 

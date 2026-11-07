@@ -200,6 +200,6 @@ mod tests {
         assert!(l.acquire(&p, Pubkey::new_unique(), base, Pubkey::new_unique(), 1, 1, NOW).is_err());
         assert_eq!(before, l.try_to_vec().unwrap());
         // Account readers must reject old allocations, even their zero padding.
-        assert_eq!(8 + crate::state::PocketV3::INIT_SPACE, 3685);
+        assert_eq!(8 + crate::state::PocketV3::INIT_SPACE, 3693);
     }
 }
