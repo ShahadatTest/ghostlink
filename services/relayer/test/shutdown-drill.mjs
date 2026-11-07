@@ -1,7 +1,7 @@
 // Actual Unix signals and disconnected HTTP, with a disposable payer and local synthetic RPC.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { once } from "node:events";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, request } from "node:http";
@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
-import { Keypair, Transaction } from "@solana/web3.js";
+import { Keypair, PublicKey, Transaction } from "@solana/web3.js";
 import bs58 from "bs58";
 import { POCKET, REGISTRY, CENSUS } from "@ghostlink/service-kit";
 import { RelayerJournal } from "../dist/journal.js";
@@ -21,11 +21,21 @@ const scope = { genesisHash, payer: payer.publicKey.toBase58(), pocket: POCKET.t
 let slot = 10, enter, release;
 const entered = new Promise(resolve => { enter = resolve; }), blocked = new Promise(resolve => { release = resolve; });
 const accepted = new Set();
+// The relayer reads the census snapshot fee before building a snapshot; the drill serves the config account.
+const CENSUS_FEE = 100_000n;
+const censusConfig = PublicKey.findProgramAddressSync([Buffer.from("config")], CENSUS)[0].toBase58();
+function censusConfigAccount() {
+  const data = Buffer.alloc(17);
+  createHash("sha256").update("account:Config").digest().copy(data, 0, 0, 8);
+  data.writeBigUInt64LE(CENSUS_FEE, 8); data[16] = 255;
+  return { data: [data.toString("base64"), "base64"], executable: false, lamports: 1_000_000, owner: CENSUS.toBase58(), rentEpoch: 0, space: data.length };
+}
 const rpc = createServer(async (req, res) => {
   let body = ""; for await (const chunk of req) body += chunk;
   const call = JSON.parse(body);
   let result;
   if (call.method === "getGenesisHash") result = genesisHash;
+  else if (call.method === "getAccountInfo" && call.params[0] === censusConfig) result = { context: { slot }, value: censusConfigAccount() };
   else if (call.method === "getBalance") result = { context: { slot: ++slot }, value: 1_000_000_000 };
   else if (call.method === "getLatestBlockhash") {
     enter(); await blocked;
@@ -88,7 +98,7 @@ try {
   assert.equal(signal, null); assert.equal(code, 0, output);
   const reopened = new RelayerJournal(journalFile, key, scope);
   try {
-    reopened.checkWritable(); assert.equal(reopened.spent(), 10000n);
+    reopened.checkWritable(); assert.equal(reopened.spent(), 10000n + CENSUS_FEE);
     assert.equal(reopened.get(requestIdHex).observation.state, "confirmed");
     assert(accepted.has(reopened.get(requestIdHex).packet.signature)); assert.equal(accepted.size, 1);
   } finally { reopened.close(); }
