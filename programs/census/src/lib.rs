@@ -10,8 +10,17 @@
 //! Recent roots are kept one per ~1-minute bucket (see
 //! `ghostlink_verifier::merkle::RootRing`), so no burst of snapshots can
 //! push the roots in-flight proofs use out of the history (ADR 0005).
+//!
+//! A snapshot must be a top-level instruction in a transaction holding
+//! only compute-budget and snapshot instructions, so nothing in the same
+//! transaction can lend a balance for the moment it is recorded.
+//! Borrowing across transactions remains possible; verifiers bound it
+//! with fresh `min_slot` windows.
 
 use anchor_lang::prelude::*;
+use anchor_lang::solana_program::instruction::{get_stack_height, TRANSACTION_LEVEL_STACK_HEIGHT};
+use anchor_lang::solana_program::sysvar::instructions::load_instruction_at_checked;
+use anchor_lang::Discriminator;
 use ghostlink_verifier::merkle::{Frontier, RootRing, ROOT_HISTORY, TREE_DEPTH};
 use ghostlink_verifier::poseidon;
 
@@ -23,6 +32,9 @@ pub const TOKEN_PROGRAM_ID: Pubkey = pubkey!("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9S
 pub const TOKEN_2022_PROGRAM_ID: Pubkey = pubkey!("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb");
 /// The wSOL mint, used as the mint id for native SOL snapshots.
 pub const NATIVE_MINT: Pubkey = pubkey!("So11111111111111111111111111111111111111112");
+/// Compute-budget instructions are the only foreign instructions a
+/// snapshot transaction may carry.
+pub const COMPUTE_BUDGET_PROGRAM_ID: Pubkey = pubkey!("ComputeBudget111111111111111111111111111111");
 
 #[program]
 pub mod ghostlink_census {
@@ -45,6 +57,15 @@ pub mod ghostlink_census {
     /// - Native SOL: `holding` is the wallet account itself; the amount
     ///   is its lamports and the mint is recorded as the wSOL mint.
     pub fn snapshot(ctx: Context<Snapshot>) -> Result<()> {
+        // A program calling in could lend the balance and take it back
+        // around this instruction; so could another instruction in the
+        // same transaction.
+        require!(
+            get_stack_height() == TRANSACTION_LEVEL_STACK_HEIGHT,
+            CensusError::CpiForbidden
+        );
+        require_snapshot_only_transaction(&ctx.accounts.instructions)?;
+
         let wallet = ctx.accounts.wallet.key();
         let holding = &ctx.accounts.holding;
         let slot = Clock::get()?.slot;
@@ -108,6 +129,25 @@ pub mod ghostlink_census {
     }
 }
 
+/// Every top-level instruction in the transaction must be a compute-budget
+/// instruction or a census snapshot: nothing can lend, move or return a
+/// balance around the moment it is recorded.
+fn require_snapshot_only_transaction(instructions: &AccountInfo) -> Result<()> {
+    let count = {
+        let data = instructions.try_borrow_data()?;
+        require!(data.len() >= 2, CensusError::ForeignInstruction);
+        u16::from_le_bytes([data[0], data[1]]) as usize
+    };
+    for index in 0..count {
+        let ix = load_instruction_at_checked(index, instructions)?;
+        let allowed = ix.program_id == COMPUTE_BUDGET_PROGRAM_ID
+            || (ix.program_id == crate::ID
+                && ix.data.starts_with(crate::instruction::Snapshot::DISCRIMINATOR));
+        require!(allowed, CensusError::ForeignInstruction);
+    }
+    Ok(())
+}
+
 #[account(zero_copy)]
 #[repr(C)]
 pub struct TreeState {
@@ -159,6 +199,9 @@ pub struct Snapshot<'info> {
     pub holding: UncheckedAccount<'info>,
     #[account(mut, seeds = [b"census"], bump)]
     pub tree_state: AccountLoader<'info, TreeState>,
+    /// CHECK: constrained to the instructions sysvar address.
+    #[account(address = anchor_lang::solana_program::sysvar::instructions::ID)]
+    pub instructions: UncheckedAccount<'info>,
 }
 
 #[event]
@@ -182,4 +225,8 @@ pub enum CensusError {
     HashFailed,
     #[msg("census tree is full")]
     TreeFull,
+    #[msg("snapshot must be a top-level instruction")]
+    CpiForbidden,
+    #[msg("a snapshot transaction may hold only compute-budget and snapshot instructions")]
+    ForeignInstruction,
 }

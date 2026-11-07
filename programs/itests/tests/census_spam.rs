@@ -1,8 +1,11 @@
 //! Spam resistance of the census and registry root histories (ADR 0005),
-//! with the compiled programs under LiteSVM: roots are kept one per
-//! 150-slot bucket, so any number of appends inside a bucket cannot push
-//! an earlier bucket's root out of the ring, and the committed fixture
-//! proof still opens a pocket after the spam.
+//! with the compiled programs under LiteSVM:
+//!
+//! - roots are kept one per 150-slot bucket, so any number of appends
+//!   inside a bucket cannot push an earlier bucket's root out of the ring,
+//!   and the committed fixture proof still opens a pocket after the spam;
+//! - a snapshot runs only at the top level of a transaction that holds
+//!   nothing but compute-budget and snapshot instructions.
 
 #[allow(dead_code)]
 mod common;
@@ -99,6 +102,20 @@ fn spam_ix(h: &Harness) -> Instruction {
 fn snapshot_native(h: &mut Harness, wallet: &Pubkey) -> Result<(), String> {
     let ix = census_snapshot_ix(&h.payer.pubkey(), wallet, wallet);
     h.send(&[ix], &[])
+}
+
+fn system_transfer(from: &Pubkey, to: &Pubkey, lamports: u64) -> Instruction {
+    let mut data = 2u32.to_le_bytes().to_vec(); // SystemInstruction::Transfer
+    data.extend_from_slice(&lamports.to_le_bytes());
+    Instruction {
+        program_id: pk(SYSTEM_ID),
+        accounts: vec![AccountMeta::new(*from, true), AccountMeta::new(*to, false)],
+        data,
+    }
+}
+
+fn assert_custom(err: &str, code: u32, name: &str) {
+    assert!(err.contains(&format!("Custom({code})")) || err.contains(name), "expected {name}: {err}");
 }
 
 #[test]
@@ -327,4 +344,34 @@ fn fixture_proof_survives_snapshot_spam() {
     };
     h.send(&[compute_budget(400_000), open], &[]).expect("open_session against the pre-spam census root");
     assert!(h.account_data(&pocket).is_some(), "pocket opened");
+}
+
+#[test]
+fn snapshot_refuses_cpi_and_any_instruction_that_could_lend_a_balance() {
+    let mut h = Harness::new();
+    set_clock(&mut h, bucket_start(11_000));
+    initialize_census(&mut h);
+    let tree = census_tree_pda();
+    let payer = h.payer.pubkey();
+    let wallet = Pubkey::new_unique();
+
+    // Through another program, which could lend before and take back after.
+    let err = h.send_expect_err(&[via_cpi(census_snapshot_ix(&payer, &wallet, &wallet))], &[]);
+    assert_custom(&err, 6004, "CpiForbidden");
+
+    // Borrow, snapshot, repay in one transaction: the lend is refused...
+    let lend = system_transfer(&payer, &wallet, 1_000_000_000);
+    let snap = census_snapshot_ix(&payer, &wallet, &wallet);
+    let err = h.send_expect_err(&[lend.clone(), snap.clone()], &[]);
+    assert_custom(&err, 6005, "ForeignInstruction");
+    // ...and so is anything after the snapshot.
+    let err = h.send_expect_err(&[snap.clone(), lend], &[]);
+    assert_custom(&err, 6005, "ForeignInstruction");
+    assert_eq!(Ring::read(&h, &tree).next_index, 0, "nothing was recorded");
+
+    // Compute-budget instructions and several snapshots may share one.
+    let other = Pubkey::new_unique();
+    h.send(&[compute_budget(600_000), snap, census_snapshot_ix(&payer, &other, &other)], &[])
+        .expect("compute budget plus snapshots");
+    assert_eq!(Ring::read(&h, &tree).next_index, 2);
 }

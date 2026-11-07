@@ -2,7 +2,7 @@
 //! tests. Raw bytes, like everything else here, so a change to the
 //! program's accounts or arguments fails these tests loudly.
 
-use super::{ix_data, meta_r, meta_w, pda, pk, CENSUS_ID, SYSTEM_ID};
+use super::{ix_data, meta_r, meta_w, pda, pk, CENSUS_ID, SYSTEM_ID, SYSVAR_IX_ID};
 use solana_instruction::{AccountMeta, Instruction};
 use solana_pubkey::Pubkey;
 
@@ -31,6 +31,7 @@ pub fn census_snapshot_ix(payer: &Pubkey, wallet: &Pubkey, holding: &Pubkey) -> 
             meta_r(*wallet),
             meta_r(*holding),
             meta_w(census_tree_pda()),
+            meta_r(pk(SYSVAR_IX_ID)),
         ],
         data: ix_data("snapshot", &()),
     }
