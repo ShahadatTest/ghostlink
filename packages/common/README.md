@@ -6,7 +6,8 @@ This package is the protocol's dictionary. It defines, once, how every value in 
 
 - `field.ts` — BN254 field encoding: the hi/lo split for 32-byte keys, hash-to-field reduction.
 - `poseidon.ts` — every Poseidon value in the protocol (`C`, leaves, `app_id`, `owner_tag`, session commitment, home hash, Merkle zeros).
-- `merkle.ts` — the incremental append-only tree, exactly mirroring the on-chain frontier algorithm.
+- `merkle.ts` — the incremental append-only tree, exactly mirroring the on-chain frontier algorithm, with roots and paths for an older prefix (`rootAt`, `pathAt`) as completed root buckets need.
+- `constants.ts` — protocol constants, including the 128-entry root history and its 150-slot buckets (`ROOT_BUCKET_SLOTS`, `rootBucket`).
 - `intent.ts` — the intent and policy schemas, their canonical bytes and hashes.
 - `login.ts` — `loginChallengeDigest`, the domain-separated digest of a 32-byte server nonce used for off-chain authentication.
 - `pda.ts` — program-derived address computation for every account.

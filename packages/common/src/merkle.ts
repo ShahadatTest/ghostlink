@@ -91,6 +91,43 @@ export class IncrementalTree {
     return { siblings, index };
   }
 
+  /** The root the tree had when it held only its first `size` leaves. */
+  rootAt(size: number): FieldElement {
+    this.checkSize(size);
+    return this.nodeAt(this.depth, 0, size);
+  }
+
+  /**
+   * Inclusion path for `index` in the tree as it was with only its first
+   * `size` leaves: what a prover needs for an older root that is still in
+   * the on-chain history. O(depth²) hashes at worst.
+   */
+  pathAt(index: number, size: number): MerklePath {
+    this.checkSize(size);
+    if (!Number.isInteger(index) || index < 0 || index >= size) throw new Error("no such leaf");
+    const siblings: FieldElement[] = [];
+    let idx = index;
+    for (let level = 0; level < this.depth; level++) {
+      siblings.push(this.nodeAt(level, idx ^ 1, size));
+      idx = Math.floor(idx / 2);
+    }
+    return { siblings, index };
+  }
+
+  private checkSize(size: number): void {
+    if (!Number.isInteger(size) || size < 0 || size > this.nextIndex) throw new Error("no such tree size");
+  }
+
+  /** Node `i` of `level` over the first `size` leaves. */
+  private nodeAt(level: number, i: number, size: number): FieldElement {
+    const width = 2 ** level;
+    const start = i * width;
+    if (start >= size) return this.zeros[level]!;
+    // Fully inside the prefix: later appends never change it.
+    if (start + width <= size) return this.levels[level]![i]!;
+    return merkleNode(this.nodeAt(level - 1, 2 * i, size), this.nodeAt(level - 1, 2 * i + 1, size));
+  }
+
   static verify(leaf: FieldElement, path: MerklePath, root: FieldElement, depth: number = TREE_DEPTH): boolean {
     if (!Number.isInteger(path.index) || path.index < 0 || path.index >= 2 ** depth) return false;
     if (path.siblings.length !== depth) return false;

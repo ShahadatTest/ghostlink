@@ -7,6 +7,24 @@ export const TREE_DEPTH = 26;
 export const ROOT_HISTORY_SIZE = 128;
 
 /**
+ * Width of a root-history bucket in slots (about a minute). Each tree keeps
+ * one root per bucket, its last, so the ring spans at least
+ * ROOT_HISTORY_SIZE buckets however busy the tree is. Prove against the root
+ * of a bucket that has ended: the newest entry can still be overwritten.
+ */
+export const ROOT_BUCKET_SLOTS = 150;
+
+/** The root-history bucket a slot falls in. */
+export function rootBucket(slot: number | bigint): number {
+  const value = typeof slot === "bigint" ? slot : BigInt(slot);
+  if (value < 0n || (typeof slot === "number" && !Number.isSafeInteger(slot))) throw new Error("slot out of range");
+  return Number(value / BigInt(ROOT_BUCKET_SLOTS));
+}
+
+/** Default census snapshot fee of a fresh deployment, in lamports. */
+export const DEFAULT_SNAPSHOT_FEE_LAMPORTS = 100_000n;
+
+/**
  * The statement inside the Sign-In-With-Solana message the wallet signs
  * (twice) to derive the identity secret. The message's first line names
  * GhostLink's own domain; SIWS-capable wallets show it and warn when a

@@ -58,6 +58,16 @@ export function censusTreePda(programId: Uint8Array = pk(CENSUS_PROGRAM_ID)) {
   return findProgramAddress([te.encode("census")], programId);
 }
 
+/** Census: the snapshot fee config. */
+export function censusConfigPda(programId: Uint8Array = pk(CENSUS_PROGRAM_ID)) {
+  return findProgramAddress([te.encode("config")], programId);
+}
+
+/** Census: the vault that collects snapshot fees. */
+export function censusFeeVaultPda(programId: Uint8Array = pk(CENSUS_PROGRAM_ID)) {
+  return findProgramAddress([te.encode("fee_vault")], programId);
+}
+
 /** Pocket: one pocket per app_id (app_id as 32 big-endian bytes). */
 export function pocketPda(appId: FieldElement, programId: Uint8Array = pk(POCKET_PROGRAM_ID)) {
   return findProgramAddress([te.encode("pocket"), fieldToBytes32(appId)], programId);

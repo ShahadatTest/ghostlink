@@ -36,7 +36,9 @@ import {
   toBase58,
   pk,
   REGISTRY_PROGRAM_ID,
+  ROOT_BUCKET_SLOTS,
   TREE_DEPTH,
+  rootBucket,
   type Intent,
 } from "../src/index.js";
 
@@ -120,6 +122,28 @@ describe("merkle tree", () => {
     expect(path.siblings.map((s) => s.toString())).toEqual(vectors.merkle.pathForLeaf1.siblings);
     expect(IncrementalTree.verify(leaves[1]!, path, tree.root)).toBe(true);
     expect(IncrementalTree.verify(leaves[0]!, path, tree.root)).toBe(false);
+  });
+  it("serves roots and paths of an older prefix, as a completed root bucket needs", () => {
+    const tree = new IncrementalTree();
+    const leaves = [11n, 12n, 13n, 14n, 15n, 16n, 17n];
+    for (const leaf of leaves) tree.append(leaf);
+    for (let size = 0; size <= leaves.length; size++) {
+      const prefix = new IncrementalTree();
+      for (const leaf of leaves.slice(0, size)) prefix.append(leaf);
+      expect(tree.rootAt(size)).toBe(prefix.root);
+      for (let i = 0; i < size; i++) {
+        expect(tree.pathAt(i, size)).toEqual(prefix.path(i));
+        expect(IncrementalTree.verify(leaves[i]!, tree.pathAt(i, size), prefix.root)).toBe(true);
+      }
+    }
+    expect(() => tree.pathAt(3, 3)).toThrow(/no such leaf/);
+    expect(() => tree.rootAt(leaves.length + 1)).toThrow(/size/);
+  });
+  it("places slots in 150-slot root buckets", () => {
+    expect(ROOT_BUCKET_SLOTS).toBe(150);
+    expect([0, 149, 150, 299, 300].map(slot => rootBucket(slot))).toEqual([0, 0, 1, 1, 2]);
+    expect(rootBucket(123_456_789n)).toBe(823_045);
+    expect(() => rootBucket(-1)).toThrow();
   });
 });
 
