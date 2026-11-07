@@ -39,7 +39,7 @@ Try it with a real proof: [`examples/verify-login`](../../examples/verify-login/
 2. The proof is bound to `expectedDomain`. A proof made for another site fails.
 3. Optional claims: holdings of a mint at or above a threshold (which requires a minimum snapshot slot), a session key and expiry, and the user's announced home address.
 4. Purpose: a website login proof cannot authorize a pocket, and a pocket authorization must match the exact policy, session kind and deployment you pass in `expect.pocket`.
-5. The registry root (and census root, for holdings claims) is one your root source recognises.
+5. The registry root (and census root, for holdings claims) is one your root source recognises. An indexer lists one root per completed 150-slot bucket, the roots the programs keep for at least 128 buckets.
 6. The Groth16 proof verifies against the login verifying key bundled in `keys/login_vk.json`.
 
 `verifyLogin` never throws on malformed input. It returns `{ ok: false, reason }`.
@@ -47,6 +47,8 @@ Try it with a real proof: [`examples/verify-login`](../../examples/verify-login/
 ## Token gates need a freshness bound
 
 `expect.holdsAtLeast` must come with `expect.minSlot`, the oldest census snapshot slot you accept; otherwise `verifyLogin` returns `{ ok: false }` with a reason saying so. The census tree only grows and the prover chooses the proof's `min_slot`, so without a bound a snapshot of a past peak, or of a briefly borrowed balance, would pass forever.
+
+The census refuses a snapshot made through another program or next to any instruction other than compute-budget and snapshot instructions, so a loan taken and repaid in the snapshot's own transaction cannot inflate it. A balance borrowed in an earlier transaction and returned in a later one still records: a snapshot shows what a wallet held at one slot, not what it owns. Keep the window short, set thresholds that make renting the balance for that window unprofitable, and do not gate anything irreversible on a single snapshot.
 
 Use `currentSlot - window`, with `currentSlot` from your own RPC. The SDK proves with `min_slot` set to its own current slot minus the claim's `maxAgeSlots`, read before proving, so make your window a little wider than the `maxAgeSlots` your clients use. With `maxAgeSlots: 9_000n` (about an hour), a window of `10_000n` leaves several minutes for proving and transport. `minSlot: 0n` accepts snapshots of any age; use it only where that is a deliberate choice.
 
