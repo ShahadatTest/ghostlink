@@ -29,9 +29,9 @@ Jupiter's current [Router API](https://dev.jup.ag/docs/swap) is the candidate fo
 
 ## Login and access gates
 
-Issue a random backend challenge, store its intended app/session and short expiry, verify the returned proof with `@ghostlink/verify`, then verify the proof-bound session signature over `loginChallengeDigest(challenge)`. Consume the challenge atomically before issuing the site's own session cookie. Check domain, session expiry, chain roots and all requested claim fields. A copied valid proof is not a bearer login token.
+Issue a random backend challenge, store its intended app/session and short expiry, verify the returned proof with `@ghostlink/verify`, then verify the proof-bound session signature over `loginChallengeDigest(challenge)` (`verifyLoginChallenge` in `@ghostlink/verify` does this for Ed25519 sessions). Consume the challenge atomically before issuing the site's own session cookie. Check domain, session expiry, chain roots and all requested claim fields. A copied valid proof is not a bearer login token.
 
-For a token gate, require the intended mint, threshold and snapshot freshness. A holdings proof concerns a recorded snapshot; it does not lock tokens or guarantee that the user still holds them. Telegram membership/access removal requires the integrating bot to recheck eligibility and manage its own permissions. Do not turn a login proof into trading consent.
+For a token gate, require the intended mint, threshold and snapshot freshness: `verifyLogin` refuses a holdings claim unless you pass `expect.minSlot`. A holdings proof concerns a recorded snapshot; it does not lock tokens or guarantee that the user still holds them. Telegram membership/access removal requires the integrating bot to recheck eligibility and manage its own permissions. Do not turn a login proof into trading consent.
 
 ## Acceptance tests for each integration
 

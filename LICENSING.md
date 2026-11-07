@@ -16,6 +16,17 @@ Apache-2.0 allows people to use, modify, redistribute and commercially build on 
 
 The screenshots are newly published documentation assets. Their separate terms do not remove rights from code already released under Apache-2.0. `LICENSE` remains unchanged. A change to future distribution terms cannot simply revoke the existing Apache grant for copies already received under it.
 
+## Third-party components under other licenses
+
+Some dependencies are not Apache-2.0. The ones that matter most:
+
+| Component | License | Where GhostLink uses it |
+| --- | --- | --- |
+| [snarkjs](https://github.com/iden3/snarkjs) and its libraries (ffjavascript, r1csfile, fastfile) | GPL-3.0 | Runtime dependency of `@ghostlink/verify` and `@ghostlink/prover-wasm`; circuit builds and tests |
+| [circomlib](https://github.com/iden3/circomlib) | GPL-3.0 | Poseidon, comparator and bit-decomposition templates included by `circuits/*.circom` |
+
+GhostLink's Apache-2.0 grant covers GhostLink's own code and does not relicense these components. If you distribute a bundle that contains them, or circuit artifacts compiled from circomlib templates, check the GPL-3.0 obligations for your distribution. This summary is not legal advice.
+
 ## Can we prohibit copying and still call the code open source?
 
 No. Copying and modification rights are fundamental to the [Open Source Definition](https://opensource.org/osd). A code license that forbids commercial competitors or all copying would be a different, restricted source model.
