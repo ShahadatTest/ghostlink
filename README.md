@@ -186,7 +186,7 @@ pnpm pack:sdk && pnpm test:package   # writes artifacts/sdk/*.tgz and SHA256SUMS
 - [x] Bot backend with Telegram authentication, encrypted keys and crash-safe order recovery
 - [x] Experimental single-hop Jupiter/Raydium route, tested on a local fork
 - [ ] npm releases with provenance
-- [ ] Public phase-2 trusted-setup ceremony to replace the development keys
+- [ ] Public phase-2 [trusted-setup ceremony](docs/CEREMONY.md) to replace the development keys
 - [ ] External security audit of the circuits, programs and SDK
 - [ ] Token-2022 support, more routes, copy-trading and DCA triggers
 - [ ] Python, Rust and Go clients

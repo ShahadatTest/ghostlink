@@ -53,9 +53,9 @@ The delegated authorization API accepts Ed25519 only. A bot-supplied P-256 key a
 
 | Gate | Current status | Evidence required to close |
 | --- | --- | --- |
-| Production proof setup | Development keys; no completed production ceremony | Freeze circuit/compiler hashes; independent phase-2 contributions, verified transcript and published artifact hashes; replace both login/owner keys together and regenerate verification constants |
+| Production proof setup | Development keys; [ceremony process and scripts](CEREMONY.md) in place, no production ceremony run | Freeze circuit/compiler hashes; independent phase-2 contributions, verified transcript and published artifact hashes; replace both login/owner keys together and regenerate verification constants |
 | Independent security review | Internal review only | External circuit, program, SDK authorization, route composition and operational review; material findings resolved and retested |
-| Deployment identity | Constants are development program IDs | Versioned network manifest with genesis, program IDs, account layout, program-binary hashes and proof hashes; verify executable code and upgrade authority on chain |
+| Deployment identity | Constants are development program IDs; `scripts/verify-program.sh` compares a local build with a deployed program | Versioned network manifest with genesis, program IDs, account layout, program-binary hashes and proof hashes; verify executable code and upgrade authority on chain |
 | Upgrade / migration governance | Production decision pending | Document multisig/timelock or immutability decision, authority custody, incident response, old-pocket exit and migration; no accidental upgrades |
 | Bot authorization boundary | Public-key SDK, pinned registry, private approval/recovery UI and separate-browser pairing locally verified | Real Telegram/wallet acceptance, production registry operation and external review |
 | First-pocket policy authorization | V2 binding locally verified; not deployed or independently reviewed | Circuit/program/SDK substitution tests, local validator evidence, external review and fresh-deployment migration |
