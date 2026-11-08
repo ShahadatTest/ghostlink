@@ -50,7 +50,9 @@ function Status() {
 - `status`: `"idle"`, `"initializing"`, `"proving"`, `"ready"`, or `"error"` when the client failed to initialize (the next call retries).
 - `session`, `setSession` and `error`.
 
-`<ContinueWithGhostLink onLogin={flow} label? className? />` calls `login(onLogin)`, shows "Proving…" while it runs, and shows any failure below itself.
+`<ContinueWithGhostLink onLogin={flow} label? busyLabel? className? />` calls `login(onLogin)`, shows `busyLabel` (default "Proving…") while it runs, and shows any failure below itself.
+
+While a login runs the button has `aria-busy="true"` and `aria-disabled="true"`, and presses are ignored, so a second click never starts another login. It does not use the `disabled` attribute, so keyboard focus stays on the button; style the busy state with `[aria-disabled="true"]` instead of `:disabled`.
 
 `useGhostLink()` and the button throw when rendered outside a `GhostLinkProvider`.
 

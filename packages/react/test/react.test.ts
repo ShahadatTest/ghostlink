@@ -107,9 +107,33 @@ describe("ContinueWithGhostLink", () => {
     const onLogin = vi.fn();
     const children = () => render(ContinueWithGhostLink, { onLogin }).props.children as ReactElement<Record<string, any>>[];
     const [button] = children();
-    expect(button!.props).toMatchObject({ type: "button", disabled: false, children: "Continue with GhostLink" });
+    expect(button!.props).toMatchObject({ type: "button", "aria-busy": false, "aria-disabled": false, children: "Continue with GhostLink" });
     await button!.props.onClick();
     expect(login).toHaveBeenCalledWith(onLogin);
     expect(children()[1]!.props).toMatchObject({ role: "alert", children: "proof failed" });
+  });
+
+  it("announces the busy state with aria-busy and a custom busy label, and ignores a second click", async () => {
+    let finish!: (s: GhostLinkSession) => void;
+    const login = vi.fn(() => new Promise<GhostLinkSession>((resolve) => { finish = resolve; }));
+    hooks.context = { login };
+    const onLogin = vi.fn();
+    const button = (props: { busyLabel?: string } = {}) =>
+      (render(ContinueWithGhostLink, { onLogin, ...props }).props.children as ReactElement<Record<string, any>>[])[0]!;
+
+    const first = button().props.onClick();
+    expect(button({ busyLabel: "Verificando…" }).props).toMatchObject({
+      "aria-busy": true,
+      "aria-disabled": true,
+      children: "Verificando…",
+    });
+    expect(button().props.children).toBe("Proving…");
+
+    await button().props.onClick();
+    expect(login).toHaveBeenCalledTimes(1);
+
+    finish(session);
+    await first;
+    expect(button().props).toMatchObject({ "aria-busy": false, "aria-disabled": false, children: "Continue with GhostLink" });
   });
 });

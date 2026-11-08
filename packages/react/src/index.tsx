@@ -126,12 +126,15 @@ export interface ContinueWithGhostLinkProps {
    * resolves with the session, which the provider then exposes. */
   onLogin: GhostLinkLoginFlow;
   label?: string;
+  /** Text shown while a login runs. Defaults to "Proving…". */
+  busyLabel?: string;
   className?: string;
 }
 
 export function ContinueWithGhostLink({
   onLogin,
   label = "Continue with GhostLink",
+  busyLabel = "Proving…",
   className,
 }: ContinueWithGhostLinkProps) {
   const { login } = useGhostLink();
@@ -156,8 +159,16 @@ export function ContinueWithGhostLink({
 
   return (
     <>
-      <button type="button" className={className} onClick={click} disabled={busy}>
-        {busy ? "Proving…" : label}
+      {/* aria-disabled, not disabled: a disabled button drops keyboard focus
+          mid-login. click() already ignores presses while busy. */}
+      <button
+        type="button"
+        className={className}
+        onClick={click}
+        aria-busy={busy}
+        aria-disabled={busy}
+      >
+        {busy ? busyLabel : label}
       </button>
       {failure && (
         <span role="alert" style={{ display: "block", marginTop: 8, fontSize: 13 }}>
