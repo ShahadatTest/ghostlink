@@ -6,7 +6,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReactElement } from "react";
-import { GhostLink, type GhostLinkSession } from "@ghostlink/sdk";
+import { GhostLink, HandoffError, requestLogin, type GhostLinkSession, type HandoffLogin } from "@ghostlink/sdk";
 import { ContinueWithGhostLink, GhostLinkProvider, useGhostLink, type GhostLinkContextValue } from "../src/index.js";
 
 const hooks = vi.hoisted(() => ({ slots: [] as unknown[], index: 0, context: null as unknown }));
@@ -31,6 +31,12 @@ vi.mock("react", async (importOriginal) => {
   };
 });
 
+// The handoff itself is tested in the SDK; here only how the button drives it.
+vi.mock("@ghostlink/sdk", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@ghostlink/sdk")>()),
+  requestLogin: vi.fn(),
+}));
+
 function render<P>(component: (props: P) => unknown, props: P): ReactElement<Record<string, any>> {
   hooks.index = 0;
   return component(props) as ReactElement<Record<string, any>>;
@@ -44,6 +50,7 @@ beforeEach(() => {
   hooks.slots = [];
   hooks.context = null;
   vi.restoreAllMocks();
+  vi.mocked(requestLogin).mockReset();
 });
 
 describe("GhostLinkProvider", () => {
@@ -135,6 +142,48 @@ describe("ContinueWithGhostLink", () => {
     finish(session);
     await first;
     expect(button().props).toMatchObject({ "aria-busy": false, "aria-disabled": false, children: "Continue with GhostLink" });
+  });
+});
+
+describe("ContinueWithGhostLink with an identity app (handoff)", () => {
+  const children = (props: Record<string, unknown>) =>
+    render(ContinueWithGhostLink, props as never).props.children as ReactElement<Record<string, any>>[];
+
+  it("needs no provider, opens the handoff inside the click and hands the approved login to the site", async () => {
+    const login = { appId: "7" } as unknown as HandoffLogin;
+    let answer!: (l: HandoffLogin) => void;
+    vi.mocked(requestLogin).mockReturnValue(new Promise((resolve) => { answer = resolve; }));
+    const onSignIn = vi.fn(async () => undefined);
+    const claim = { mint: "So11111111111111111111111111111111111111112", threshold: 1n, maxAgeSlots: 9_000n };
+    const props = { identityOrigin: "https://id.example", claim, onSignIn, label: "Sign in" };
+    const [button] = children(props);
+    expect(button!.props).toMatchObject({ children: "Sign in", "aria-busy": false });
+    const clicked = button!.props.onClick();
+    // Synchronously, before the click handler first awaits: popup blockers allow only that.
+    expect(requestLogin).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(requestLogin).mock.calls[0]![0]).toEqual({ identityOrigin: "https://id.example", claim });
+    expect(children(props)[0]!.props).toMatchObject({ "aria-busy": true, children: "Waiting for approval…" });
+    answer(login);
+    await clicked;
+    expect(onSignIn).toHaveBeenCalledWith(login);
+    expect(children(props)[0]!.props).toMatchObject({ "aria-busy": false, children: "Sign in" });
+  });
+
+  it("shows how the handoff ended: blocked, closed, refused, or the site's own failure", async () => {
+    for (const error of [new HandoffError("popup_blocked", "the browser blocked the sign-in window"),
+      new HandoffError("refused", "you declined the sign-in request")]) {
+      hooks.slots = [];
+      vi.mocked(requestLogin).mockRejectedValueOnce(error);
+      const props = { identityOrigin: "https://id.example", onSignIn: vi.fn() };
+      await children(props)[0]!.props.onClick();
+      expect(children(props)[1]!.props).toMatchObject({ role: "alert", children: error.message });
+      expect(props.onSignIn).not.toHaveBeenCalled();
+    }
+    hooks.slots = [];
+    vi.mocked(requestLogin).mockResolvedValueOnce({} as HandoffLogin);
+    const props = { identityOrigin: "https://id.example", onSignIn: async () => { throw new Error("backend refused: wrong_domain"); } };
+    await children(props)[0]!.props.onClick();
+    expect(children(props)[1]!.props).toMatchObject({ role: "alert", children: "backend refused: wrong_domain" });
   });
 });
 

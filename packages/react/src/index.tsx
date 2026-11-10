@@ -2,7 +2,9 @@
 /**
  * React bindings for GhostLink. An app wraps itself in
  * <GhostLinkProvider>, reads state through useGhostLink(), and drops
- * <ContinueWithGhostLink> next to its old connect button.
+ * <ContinueWithGhostLink> next to its old connect button. A site that signs
+ * users in through a separate identity app (the handoff,
+ * docs/IDENTITY-HANDOFF.md) needs only the button, with `identityOrigin`.
  */
 import {
   createContext,
@@ -15,8 +17,11 @@ import {
 } from "react";
 import {
   GhostLink,
+  requestLogin,
   type GhostLinkConfig,
   type GhostLinkSession,
+  type HandoffLogin,
+  type RequestLoginOptions,
 } from "@ghostlink/sdk";
 
 /** The app's login flow: gather witness data, prove, send the proof to its backend. */
@@ -121,24 +126,51 @@ export function useGhostLink(): GhostLinkContextValue {
   return value;
 }
 
-export interface ContinueWithGhostLinkProps {
-  /** Called when the user taps the button; the app runs its login flow
-   * (gather witness data, prove, send the proof to its backend) and
-   * resolves with the session, which the provider then exposes. */
-  onLogin: GhostLinkLoginFlow;
+interface ButtonProps {
   label?: string;
-  /** Text shown while a login runs. Defaults to "Proving…". */
+  /** Text shown while a login runs. Defaults to "Proving…", or "Waiting for approval…" with `identityOrigin`. */
   busyLabel?: string;
   className?: string;
 }
 
-export function ContinueWithGhostLink({
-  onLogin,
-  label = "Continue with GhostLink",
-  busyLabel = "Proving…",
-  className,
-}: ContinueWithGhostLinkProps) {
-  const { login } = useGhostLink();
+/** The app proves on this page itself (it holds the identity): needs a <GhostLinkProvider>. */
+export interface ContinueWithGhostLinkFlowProps extends ButtonProps {
+  /** Called when the user taps the button; the app runs its login flow
+   * (gather witness data, prove, send the proof to its backend) and
+   * resolves with the session, which the provider then exposes. */
+  onLogin: GhostLinkLoginFlow;
+  identityOrigin?: undefined;
+  onSignIn?: undefined;
+}
+
+/**
+ * The site asks a separate identity app, in a popup, for a login proof
+ * (`requestLogin`). No provider is needed and no identity secret reaches
+ * the page.
+ */
+export interface ContinueWithGhostLinkHandoffProps extends ButtonProps, Omit<RequestLoginOptions, "window" | "signal"> {
+  /** The identity app's exact origin, e.g. "https://id.example.com". */
+  identityOrigin: string;
+  /**
+   * Called with the approved login. Fetch a single-use nonce from your
+   * backend and send it `await login.signChallenge(nonce)`; a rejection is
+   * shown below the button.
+   */
+  onSignIn: (login: HandoffLogin) => void | Promise<void>;
+  onLogin?: undefined;
+}
+
+export type ContinueWithGhostLinkProps = ContinueWithGhostLinkFlowProps | ContinueWithGhostLinkHandoffProps;
+
+export function ContinueWithGhostLink(props: ContinueWithGhostLinkProps) {
+  const { label = "Continue with GhostLink", className } = props;
+  const handoff = typeof props.identityOrigin === "string";
+  const busyLabel = props.busyLabel ?? (handoff ? "Waiting for approval…" : "Proving…");
+  // Read unconditionally (hooks keep their order); only the in-page flow needs a provider.
+  const context = useContext(Ctx);
+  if (!handoff && !context) {
+    throw new Error("useGhostLink and <ContinueWithGhostLink> must be rendered inside <GhostLinkProvider>");
+  }
   const [busy, setBusy] = useState(false);
 
   const [failure, setFailure] = useState<string | null>(null);
@@ -148,15 +180,21 @@ export function ContinueWithGhostLink({
     setBusy(true);
     setFailure(null);
     try {
-      await login(onLogin);
+      if (props.identityOrigin !== undefined) {
+        // Called before anything awaits, so the popup opens inside this click's user gesture.
+        const { onSignIn, label: _l, busyLabel: _b, className: _c, onLogin: _o, ...options } = props;
+        await onSignIn(await requestLogin(options));
+      } else {
+        await context!.login(props.onLogin);
+      }
     } catch (e) {
-      // A refused wallet or a failed proof is the user's to see, not an
-      // unhandled rejection in the console.
+      // A refused wallet, a closed sign-in window or a failed proof is the
+      // user's to see, not an unhandled rejection in the console.
       setFailure(message(e));
     } finally {
       setBusy(false);
     }
-  }, [busy, login, onLogin]);
+  }, [busy, context, props]);
 
   return (
     <>
