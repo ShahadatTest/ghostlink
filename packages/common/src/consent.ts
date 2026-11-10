@@ -1,7 +1,9 @@
 import type { PolicyDto } from "./api.js";
+import type { Cluster } from "./constants.js";
 
+/** The deployment identity a bot consent binds; see `checkBotDeployment`. */
 export interface BotDeployment {
-  cluster: "localnet";
+  cluster: Cluster;
   genesisHash: string;
   pocketProgram: string;
   registryProgram: string;
