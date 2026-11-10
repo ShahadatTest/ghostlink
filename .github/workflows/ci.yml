@@ -116,3 +116,53 @@ jobs:
           for p in registry census pocket; do
             sha256sum target/deploy/ghostlink_$p.so
           done
+
+  # Runs the self-hosting runner as a user would: the five services as
+  # separate processes on a local validator (scripts/selfhost-proof.sh, twice:
+  # fresh state, then restarted on the same ledger and state), plus the census
+  # fee tool test. Neither makes a zero-knowledge proof, so no proving keys are
+  # needed. scripts/localnet-e2e.sh is not run here: it proves with
+  # development proving keys that match the committed verifying keys, and
+  # those keys are not in the repository.
+  selfhost:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.97.1
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: programs-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+      - name: install agave + platform tools
+        run: |
+          archive="$RUNNER_TEMP/solana-release.tar.bz2"
+          curl --fail --silent --show-error --location --retry 3 \
+            "https://github.com/anza-xyz/agave/releases/download/${SOLANA_VERSION}/solana-release-x86_64-unknown-linux-gnu.tar.bz2" \
+            --output "$archive"
+          echo "65614325423316a48f57f1ceeaa91ca78f4516e165e305b38c01873cf8c6b8b4  $archive" | sha256sum --check --strict
+          tar -xjf "$archive" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/solana-release/bin" >> "$GITHUB_PATH"
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -r build
+      - name: build programs
+        run: bash scripts/build-programs.sh
+      - name: census fee tool
+        run: bash scripts/test-census-fee.sh
+      - name: self-hosting runner, fresh state
+        run: bash scripts/selfhost-proof.sh "$RUNNER_TEMP/selfhost-proof"
+      - name: self-hosting runner, reused state
+        run: bash scripts/selfhost-proof.sh "$RUNNER_TEMP/selfhost-proof"
+      - name: service logs
+        if: failure()
+        run: tail -n 50 "$RUNNER_TEMP"/selfhost-proof/state/logs/*.log || true
