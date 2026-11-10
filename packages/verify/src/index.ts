@@ -120,12 +120,15 @@ export interface VerifyLoginParams {
   fetchFn?: typeof fetch;
 }
 
-export interface VerifyLoginResult {
-  ok: boolean;
-  /** The user's stable ID for THIS app as a canonical decimal string. */
-  appId?: string;
-  reason?: string;
-}
+/** `ok` narrows the result: a success always carries `appId`, a refusal always carries `reason`. */
+export type VerifyLoginResult =
+  | {
+      ok: true;
+      /** The user's stable ID for THIS app as a canonical decimal string. */
+      appId: string;
+      reason?: undefined;
+    }
+  | { ok: false; reason: string; appId?: undefined };
 
 const DECIMAL = /^(0|[1-9][0-9]*)$/;
 const MAX_U64 = (1n << 64n) - 1n;
