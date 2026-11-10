@@ -1,6 +1,6 @@
 # Durable relayer submissions
 
-The V2 relayer saves each signed transaction and its fee/rent reservation in an encrypted SQLite journal **before** broadcast. Registration, census snapshots, session opening and owner actions use the same submission contract. This candidate is tested on disposable local validators and refuses known public devnet/mainnet genesis hashes; configuring storage does not approve a public deployment.
+The V2 relayer saves each signed transaction and its fee/rent reservation in an encrypted SQLite journal **before** broadcast. Registration, census snapshots, session opening and owner actions use the same submission contract. This candidate is tested on disposable local validators. It refuses known public devnet/mainnet genesis hashes unless `GHOSTLINK_DEPLOYMENT` names a [deployment manifest](DEPLOYMENTS.md) for that cluster with its own program IDs; configuring storage does not approve a public deployment.
 
 ## Request and receipt contract
 
@@ -30,6 +30,7 @@ Use Node 22 with `node:sqlite`. Keep these paths and keys outside tracked source
 
 - `GHOSTLINK_RELAYER_KEYPAIR`: payer keypair JSON.
 - `RELAYER_GENESIS_HASH`: independently approved chain identity; `RPC_ENDPOINTS_PATH` or `RPC_URL` supplies the approved providers.
+- `GHOSTLINK_DEPLOYMENT`: path to the [deployment manifest](DEPLOYMENTS.md) naming the cluster, genesis and program IDs. Unset means the built-in localnet deployment, which refuses public genesis hashes. Use the same value for `initialize.js` and the service: the saved scope pins the programs, so state from one deployment never starts under another.
 - `RELAYER_JOURNAL_PATH`: persistent journal on local durable storage.
 - `RELAYER_JOURNAL_ID`: independently pinned 64-character lowercase hex instance ID from the approved deployment record. Do not discover or replace this pin automatically during startup.
 - `RELAYER_JOURNAL_KEY_PATH`: file containing exactly 32 raw random bytes, managed through the operator's secret system.

@@ -4,7 +4,7 @@ GhostLink's reference services connect clients to the Solana programs. They carr
 
 ## Status
 
-These services implement the V2 authorization / PocketV3 protocol, with durable state, recovery and hosted-service controls. They are tested on disposable local validators. The state initializers, the Actions service and every fee-paying path refuse the public devnet and mainnet genesis hashes. They are not a drop-in upgrade for the preserved V1 devnet deployment described in the [devnet notes](../docs/DEVNET.md). Nothing here is approved for real funds.
+These services implement the V2 authorization / PocketV3 protocol, with durable state, recovery and hosted-service controls. They are tested on disposable local validators. Each takes its deployment from the manifest named by `GHOSTLINK_DEPLOYMENT` ([deployments](../docs/DEPLOYMENTS.md)). Without one, the state initializers, the Actions service and every fee-paying path refuse the public devnet and mainnet genesis hashes; with one, they accept only that manifest's cluster and genesis, and never the built-in program IDs on a public cluster. They are not a drop-in upgrade for the preserved V1 devnet deployment described in the [devnet notes](../docs/DEVNET.md). Nothing here is approved for real funds.
 
 | Service | Responsibility | Boundary to understand |
 | --- | --- | --- |

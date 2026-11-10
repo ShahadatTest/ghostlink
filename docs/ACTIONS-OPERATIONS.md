@@ -1,18 +1,19 @@
 # Funding Actions service
 
-The Actions endpoint constructs an **unsigned** deposit transaction. The user's wallet pays, signs, submits and tracks it. The service holds no wallet key and never broadcasts. This V2 candidate is verified on disposable local validators and refuses known public devnet/mainnet genesis hashes until a reviewed deployment migration exists.
+The Actions endpoint constructs an **unsigned** deposit transaction. The user's wallet pays, signs, submits and tracks it. The service holds no wallet key and never broadcasts. This V2 candidate is verified on disposable local validators. It refuses known public devnet/mainnet genesis hashes unless `GHOSTLINK_DEPLOYMENT` names a [deployment manifest](DEPLOYMENTS.md) for that cluster with its own program IDs.
 
 ## Approved chain and configuration
 
 - `ACTIONS_GENESIS_HASH`: required, independently approved full genesis hash. The hosted service verifies it through the bounded [RPC pool](RPC-OPERATIONS.md) before listening.
 - `RPC_ENDPOINTS_PATH` or `RPC_URL`: operator-approved providers. Requests cannot choose the RPC or expected chain.
+- `GHOSTLINK_DEPLOYMENT`: path to the [deployment manifest](DEPLOYMENTS.md) whose Pocket program the deposits target. Unset means the built-in localnet deployment, which refuses public genesis hashes.
 - `BASE_URL`: the public HTTPS origin used for metadata links; loopback HTTP is allowed for local development. Paths, credentials, query strings and fragments are refused. The default is `http://localhost:<PORT>` and must be set for hosted use.
 - `PORT`: public HTTP port, default 8790.
 - `OPERATIONS_PORT`: separate loopback-only metrics port, default 18790.
 - `ACTIONS_MAX_IN_FLIGHT`: deposit preparations, default 8, allowed range 1–64. Overload is refused without queuing.
 - `TRUST_PROXY`: leave disabled unless a controlled proxy overwrites forwarded addresses.
 
-Legacy `CLUSTER=devnet` or `mainnet-beta` is refused. An environment label does not establish the connected deployment. The Actions `X-Blockchain-Ids` header derives from the approved genesis using the [Solana CAIP-2 rule](https://namespaces.chainagnostic.org/solana/caip2), rather than defaulting to devnet. It accompanies metadata, preflight and error responses. The service uses the [Actions specification's](https://solana.com/docs/tools/actions) `{ "message": "..." }` error shape, including parser, not-found and overload errors; provider diagnostics remain opaque. Other GhostLink services retain their existing error field.
+A legacy `CLUSTER` label that differs from the manifest's cluster is refused. An environment label does not establish the connected deployment. The Actions `X-Blockchain-Ids` header derives from the approved genesis using the [Solana CAIP-2 rule](https://namespaces.chainagnostic.org/solana/caip2), rather than defaulting to devnet. It accompanies metadata, preflight and error responses. The service uses the [Actions specification's](https://solana.com/docs/tools/actions) `{ "message": "..." }` error shape, including parser, not-found and overload errors; provider diagnostics remain opaque. Other GhostLink services retain their existing error field.
 
 ## Deposit validation
 

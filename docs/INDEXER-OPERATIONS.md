@@ -35,7 +35,8 @@ Use Node 22 and private paths outside version control:
 
 | Variable | Meaning |
 | --- | --- |
-| `INDEXER_GENESIS_HASH` | Independently approved chain identity |
+| `INDEXER_GENESIS_HASH` | Independently approved chain identity; must suit the deployment manifest |
+| `GHOSTLINK_DEPLOYMENT` | Path to the [deployment manifest](DEPLOYMENTS.md) naming the cluster, genesis and program IDs. Unset means the built-in localnet deployment, which refuses public genesis hashes. Set it identically for `initialize.js` and the service; the state scope pins the programs |
 | `RPC_ENDPOINTS_PATH` or `RPC_URL` | Approved transport providers; see [RPC operations](RPC-OPERATIONS.md) |
 | `INDEXER_STATE_PATH` | Durable SQLite checkpoint and scan spool |
 | `INDEXER_STATE_KEY_PATH` | Exactly 32 raw random bytes from the operator's secret system |

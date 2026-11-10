@@ -5,6 +5,7 @@ The watcher reads confirmed Pocket events, forwards proposal/large-fill/executio
 ## Configuration
 
 - `WATCHER_GENESIS_HASH`: independently approved chain identity; required.
+- `GHOSTLINK_DEPLOYMENT`: path to the [deployment manifest](DEPLOYMENTS.md) naming the cluster, genesis and program IDs. Unset means the built-in localnet deployment, which refuses public genesis hashes. Use the same value for `initialize.js` and the service: the saved scope pins the programs, so state from one deployment never starts under another.
 - `WATCHER_STATE_PATH` and `WATCHER_STATE_KEY_PATH`: required durable SQLite queue/checkpoint path and a private file of exactly 32 raw encryption-key bytes. Legacy JSON is refused; preserve it for an independently checked migration.
 - `WATCHER_STATE_ID`: required independently retained 64-character lowercase hex observation-state instance ID. Startup must match it before acquiring the worker lease.
 - `RPC_ENDPOINTS_PATH` or `RPC_URL`: approved providers, as described in [RPC operations](RPC-OPERATIONS.md).

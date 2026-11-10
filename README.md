@@ -37,7 +37,7 @@ Trading bots ask for your private key. "Connect wallet" logins tie your on-chain
 Proofs are Groth16 over BN254, generated on the user's device and verified **on-chain** by the Solana programs, or by your server for off-chain login.
 
 > [!WARNING]
-> **Experimental. Not for real funds.** The code on `main` runs on a local validator today; it has no public devnet or mainnet deployment yet, and the SDK refuses other clusters. The proving keys come from a single-party development setup, and the code has not had an external security audit. See [project status](#project-status).
+> **Experimental. Not for real funds.** The code on `main` runs on a local validator out of the box. There is no official public devnet or mainnet deployment; you can [create your own](docs/DEPLOYMENTS.md) with your own program keys, and the SDK and services refuse public clusters without such a deployment manifest. The proving keys come from a single-party development setup, and the code has not had an external security audit. See [project status](#project-status).
 
 ## Quickstart
 
@@ -184,7 +184,8 @@ pnpm test:package    # installs the archives into a clean project and checks the
 | Programs, circuits, SDK and services (V2 protocol) | Built and tested. CI runs more than 440 automated tests: TypeScript, Rust, LiteSVM program flows, circuits, runnable examples and installed-package checks |
 | Full journey on a local validator | Passing: register, snapshot, consent, prove, open, fund, trade and recover |
 | [Hosted devnet app](https://app.ghostlink.software) | Live with test tokens, running the earlier V1 deployment. [Walkthrough](docs/WALKTHROUGH.md) |
-| Mainnet | Not yet |
+| Self-hosted deployments | Supported: generate keys, build, deploy and configure from one [deployment manifest](docs/DEPLOYMENTS.md). Tested on a local validator with fresh program IDs |
+| Official public V2 deployment | Not yet; mainnet not yet |
 
 **On the way to mainnet:**
 
@@ -207,6 +208,7 @@ The full checklist, with the evidence each gate needs, is in [mainnet readiness]
 | Start here | |
 | --- | --- |
 | [Setup](docs/SETUP.md) | Toolchain, building, testing and the local stack |
+| [Deployments](docs/DEPLOYMENTS.md) | Running GhostLink under your own program IDs, on a local validator, devnet or mainnet |
 | [Integration guide](docs/INTEGRATIONS.md) | What GhostLink guarantees, and what your integration must do |
 | [Threat model](docs/THREAT-MODEL.md) | Trust boundaries, assumptions and known limits |
 | [Owner consent](docs/OWNER-CONSENT.md) · [owner recovery](docs/OWNER-RECOVERY.md) | Approving bots, revoking them and getting funds back |

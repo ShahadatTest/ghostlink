@@ -1,6 +1,6 @@
 # Devnet
 
-> V2 candidate notice: this page records the preserved **V1** deployment. The commands and results below are historical V1 procedures, not runnable V2 release instructions. The current development branch changes the login proof and session instruction and is localnet-only. Both devnet runners refuse to proceed; the local validator runner refuses funded payer keys and public-chain genesis. Do not send V2 proofs or deploy V2 binaries to these existing IDs. See [ADR 0003](adr/0003-session-authorization-v2.md). The private live app remains on its compatible V1 code.
+> V2 candidate notice: this page records the preserved **V1** deployment. The commands and results below are historical V1 procedures, not runnable V2 release instructions. V2 changes the login proof and session instruction. Its program IDs default to these V1 addresses, so the SDK, services and bot refuse devnet unless given a [deployment manifest](DEPLOYMENTS.md) for different programs, and `scripts/deploy-programs.sh` refuses these IDs on every cluster. To run V2 on devnet, create your own deployment. The historical devnet runner is retired; the local validator runner refuses funded payer keys and public-chain genesis. See [ADR 0003](adr/0003-session-authorization-v2.md) and [ADR 0007](adr/0007-deployment-manifest.md). The private live app remains on its compatible V1 code.
 
 > Updated 2026-10-16: the reviewed Pocket program is deployed at a fresh devnet address. The old program and its seven legacy accounts were preserved. Clients in this release target the new 2,089-byte layout; they do not migrate or reinterpret older accounts. See [ADR 0002](adr/0002-open-source-review.md).
 
@@ -22,7 +22,7 @@ Deploy keypairs live outside the repo in `~/.ghostlink/keys/` (WSL). The registr
 
 ## Deploying
 
-The script below is legacy operator tooling. Program keypairs matching these IDs are held privately and are not supplied with the public source. It skips already-deployed programs; it does not upgrade or migrate them. The script verifies the RPC genesis hash is devnet before any deployment. Override the key directory with `GHOSTLINK_PROGRAM_KEY_DIR` and the payer path with `GHOSTLINK_DEPLOYER_KEYPAIR`.
+This section is historical: `scripts/devnet-deploy.sh` was removed with [ADR 0007](adr/0007-deployment-manifest.md). V2 deployments use `scripts/deploy-programs.sh` with your own keys ([deployments](DEPLOYMENTS.md)). Program keypairs matching these V1 IDs are held privately and are not supplied with the public source. It skips already-deployed programs; it does not upgrade or migrate them. The script verifies the RPC genesis hash is devnet before any deployment. Override the key directory with `GHOSTLINK_PROGRAM_KEY_DIR` and the payer path with `GHOSTLINK_DEPLOYER_KEYPAIR`.
 
 ```bash
 # fund the deployer (~7 SOL covers all three programs)
@@ -30,13 +30,13 @@ solana airdrop 5 $(solana-keygen pubkey ~/.ghostlink/keys/deployer.json) -u devn
 # the CLI faucet rate-limits aggressively; https://faucet.solana.com
 # (GitHub sign-in) is the reliable fallback
 
-scripts/devnet-deploy.sh   # deploys whatever is missing, then runs the
+scripts/devnet-deploy.sh   # (removed) deployed whatever was missing, then ran the
                            # identity-path e2e (register → … → open → fund → sweep)
 ```
 
 ## What runs on devnet vs localnet
 
-| Flow | Localnet (`scripts/localnet-e2e.sh`) | Devnet (`scripts/devnet-deploy.sh`) |
+| Flow | Localnet (`scripts/localnet-e2e.sh`) | V1 devnet (historical `scripts/devnet-deploy.sh`) |
 | --- | --- | --- |
 | register / snapshot / prove / verify / open_session | ✓ | ✓ |
 | fund through the Blink | ✓ | ✓ |
@@ -82,7 +82,7 @@ atomically and swept home with the owner proof.
 
 ## Running services against devnet
 
-> Historical V1 configuration. The V2 services in this repository do not run against public devnet: their initializers, the Actions service and every fee-paying path refuse its genesis hash, and they refuse `RELAYER_BUDGET_PATH`, `PERSIST_PATH`, a non-finalized `INGEST_COMMITMENT` and `CLUSTER=devnet`. For V2 configuration, use the [relayer](RELAYER-OPERATIONS.md), [solver](SOLVER-OPERATIONS.md), [indexer](INDEXER-OPERATIONS.md), [watcher](WATCHER-OPERATIONS.md) and [Actions](ACTIONS-OPERATIONS.md) guides.
+> Historical V1 configuration. The V2 services in this repository refuse the devnet genesis hash unless `GHOSTLINK_DEPLOYMENT` names a devnet [deployment manifest](DEPLOYMENTS.md) for your own programs, and they refuse `RELAYER_BUDGET_PATH`, `PERSIST_PATH`, a non-finalized `INGEST_COMMITMENT` and a `CLUSTER` label that disagrees with the manifest. For V2 configuration, use the [relayer](RELAYER-OPERATIONS.md), [solver](SOLVER-OPERATIONS.md), [indexer](INDEXER-OPERATIONS.md), [watcher](WATCHER-OPERATIONS.md) and [Actions](ACTIONS-OPERATIONS.md) guides.
 
 Each service takes `RPC_URL=https://api.devnet.solana.com` (a Helius devnet URL is better behaved for the indexer's polling). Keys via `GHOSTLINK_RELAYER_KEYPAIR` / `GHOSTLINK_SOLVER_KEYPAIR`; never in the repo.
 

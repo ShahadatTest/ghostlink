@@ -55,7 +55,7 @@ The delegated authorization API accepts Ed25519 only. A bot-supplied P-256 key a
 | --- | --- | --- |
 | Production proof setup | Development keys; [ceremony process and scripts](CEREMONY.md) in place, no production ceremony run | Freeze circuit/compiler hashes; independent phase-2 contributions, verified transcript and published artifact hashes; replace both login/owner keys together and regenerate verification constants |
 | Independent security review | Internal review only | External circuit, program, SDK authorization, route composition and operational review; material findings resolved and retested |
-| Deployment identity | Constants are development program IDs; `scripts/verify-program.sh` compares a local build with a deployed program | Versioned network manifest with genesis, program IDs, account layout, program-binary hashes and proof hashes; verify executable code and upgrade authority on chain |
+| Deployment identity | Versioned [deployment manifest](DEPLOYMENTS.md) with cluster, genesis, program IDs and verifying-key digests, checked against the RPC genesis by the SDK rule, services and bot ([ADR 0007](adr/0007-deployment-manifest.md)); `scripts/verify-program.sh` compares a local build with a deployed program | Versioned network manifest with genesis, program IDs, account layout, program-binary hashes and proof hashes; verify executable code and upgrade authority on chain |
 | Upgrade / migration governance | Production decision pending | Document multisig/timelock or immutability decision, authority custody, incident response, old-pocket exit and migration; no accidental upgrades |
 | Bot authorization boundary | Public-key SDK, pinned registry, private approval/recovery UI and separate-browser pairing locally verified | Real Telegram/wallet acceptance, production registry operation and external review |
 | First-pocket policy authorization | V2 binding locally verified; not deployed or independently reviewed | Circuit/program/SDK substitution tests, local validator evidence, external review and fresh-deployment migration |
@@ -68,7 +68,7 @@ The delegated authorization API accepts Ed25519 only. A bot-supplied P-256 key a
 | User recovery | Private owner revocation and batch return work with the bot offline; local-validator tests cover lost replies, reassigned destinations, outside delegate/close authorities, exact home balances and retained relayer retry receipts | Real lost-device/factor acceptance, support playbook, wider asset support, compromised-session race rehearsal and independent review; Token-2022 remains unsupported. Frozen sources are skipped, and an owner sweep writes off a position frozen in one ([ADR 0006](adr/0006-pocket-hardening.md)) |
 | Pilot acceptance | Not started | Supported wallet/device and strategy matrix, agreed amount/user caps, monitoring, successful exit/revoke and incident rehearsal |
 
-`GhostLink.init` now permits only localnet for the V2 candidate; no V2 devnet/mainnet deployment is verified. Removing that check alone does not satisfy any gate. Low-level encoders remain usable for tests and do not themselves verify RPC identity.
+`GhostLink.init` permits devnet or mainnet only with an explicit deployment manifest that names that cluster's genesis and its own program IDs; there is no official V2 devnet/mainnet deployment. Accepting a manifest does not satisfy any gate. Low-level encoders remain usable for tests and do not themselves verify RPC identity.
 
 ## Build order
 

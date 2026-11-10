@@ -1,6 +1,6 @@
 # Integrating GhostLink with bots and applications
 
-This is an experimental V2 localnet integration contract. See [mainnet readiness](MAINNET-READINESS.md) before planning a real-funds launch and [SDK installation](../packages/sdk/README.md) for local archives. There is no claim of compatibility with a named third-party bot until its operator integrates and verifies the flow.
+This is an experimental V2 integration contract, tested on local validators. There is no official public V2 deployment; integrations run against a [deployment](DEPLOYMENTS.md) their operator creates and names in a deployment manifest. See [mainnet readiness](MAINNET-READINESS.md) before planning a real-funds launch and [SDK installation](../packages/sdk/README.md) for local archives. There is no claim of compatibility with a named third-party bot until its operator integrates and verifies the flow.
 
 ## Telegram bot and Mini App flow
 
@@ -15,7 +15,7 @@ This is an experimental V2 localnet integration contract. See [mainnet readiness
 
 The installed SDK provides public-key descriptors, local proof preparation, intent signing and explicit submission/status clients. The separate bot backend supplies Telegram authentication, encrypted consent/key storage and durable nonce/signed-order allocation using a stable business request key; the reference solver supplies an encrypted transaction journal and restart reconciliation. The trusted product UI, strategy scheduler, coordinated restore and live DEX route remain unfinished. See [transaction recovery](TRANSACTION-RECOVERY.md). No bot token is needed in the public SDK or browser bundle.
 
-The V2 candidate binds the approved policy, session kind and program IDs into the login proof and uses `open_session_v2`. A login-only proof cannot activate spending. This is not yet deployed: the existing devnet app remains on V1. See [the protocol/migration decision](adr/0003-session-authorization-v2.md) before integrating.
+The V2 candidate binds the approved policy, session kind and program IDs into the login proof and uses `open_session_v2`. A login-only proof cannot activate spending. The maintainers have not deployed it: the existing devnet app remains on V1. Pass the operator's manifest to `GhostLink.init({ deployment })` and to `verifyLogin` (`sessionDeployment(manifest)`) so addresses and proofs bind that deployment's programs. See [the protocol/migration decision](adr/0003-session-authorization-v2.md) before integrating.
 
 For named-provider findings and implementation priorities, see [bot compatibility research](BOT-COMPATIBILITY.md).
 

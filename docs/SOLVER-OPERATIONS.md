@@ -28,7 +28,8 @@ These are all the variables `services/solver/src/index.ts` reads. Keep paths, ke
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `GHOSTLINK_SOLVER_KEYPAIR` | required | Solver keypair JSON. It pays fees and signs every fill. |
-| `SOLVER_GENESIS_HASH` | required | Independently approved chain identity. The RPC pool must report it; known public devnet/mainnet hashes are refused. |
+| `SOLVER_GENESIS_HASH` | required | Independently approved chain identity. The RPC pool must report it; known public devnet/mainnet hashes are refused unless the deployment manifest is for that cluster. |
+| `GHOSTLINK_DEPLOYMENT` | built-in localnet | Path to the [deployment manifest](DEPLOYMENTS.md) naming the cluster, genesis and program IDs. Use the same value for `initialize.js`; the journal scope pins the Pocket program. |
 | `SOLVER_JOURNAL_PATH` | required | Existing encrypted SQLite journal on local durable storage. |
 | `SOLVER_JOURNAL_KEY_PATH` | required | File containing exactly 32 raw random bytes. |
 | `SOLVER_JOURNAL_ID` | required | Independently pinned 64-character lowercase hexadecimal journal instance ID. |

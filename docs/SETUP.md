@@ -2,7 +2,7 @@
 
 The TypeScript workspaces run on Node. Solana binaries and circuit compilation use Linux; Windows developers can use WSL. Use test assets only.
 
-The V2 candidate must run on a disposable local validator. Its login proofs and `open_session_v2` instruction are incompatible with the preserved V1 devnet deployment. Do not upgrade that program or point V2 services at it; a fresh deployment and migration require separate verification ([ADR 0003](adr/0003-session-authorization-v2.md)).
+By default the V2 candidate runs on a disposable local validator with the committed program IDs. Its login proofs and `open_session_v2` instruction are incompatible with the preserved V1 devnet deployment at those same IDs, so the SDK and services refuse devnet and mainnet unless you give them a [deployment manifest](DEPLOYMENTS.md) for your own programs ([ADR 0003](adr/0003-session-authorization-v2.md), [ADR 0007](adr/0007-deployment-manifest.md)). There is no official public V2 deployment.
 
 ## Toolchain
 
@@ -69,4 +69,10 @@ Hosted service entry points have additional durable-state and approved-chain req
 
 ## Credentials and identity
 
-Keep keypairs and environment files outside version control. The devnet scripts require program keypairs matching the declared program IDs, which are not supplied in this public repository. See [DEVNET](DEVNET.md).
+Keep keypairs and environment files outside version control. The keypairs for the committed program IDs are not supplied in this public repository; to deploy, generate your own and follow [deployments](DEPLOYMENTS.md). To run the local journey under freshly generated program IDs:
+
+```bash
+node scripts/deployment.mjs new --cluster localnet --keys ~/ghostlink-keys/local --out ~/ghostlink-keys/local/manifest.json
+bash scripts/build-programs.sh --deployment ~/ghostlink-keys/local/manifest.json
+GHOSTLINK_DEPLOYMENT=~/ghostlink-keys/local/manifest.json bash scripts/localnet-e2e.sh
+```
