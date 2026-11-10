@@ -1,6 +1,6 @@
 # GhostLink bot backend
 
-Experimental Node.js backend for Telegram Mini App authentication, public-key consent requests, encrypted bot session storage and constrained intent signing. **Localnet V2 candidate only. No real-funds approval or commercial bot integration is implied.** The owner proving interface is a separate trusted application; no product interface is included here.
+Experimental Node.js backend for Telegram Mini App authentication, public-key consent requests, encrypted bot session storage and constrained intent signing. **V2 candidate with no official public deployment. No real-funds approval or commercial bot integration is implied.** The owner proving interface is a separate trusted application; no product interface is included here.
 
 Use Node 22.16+ within the 22 release line, or Node 24. `node:sqlite` is experimental in these runtimes; later major versions require validation before support. The package contains no browser bundle. ESM imports and CommonJS dynamic imports are supported.
 
@@ -62,7 +62,7 @@ export function startBot(
 }
 ```
 
-`options` contains the operator's bot token, a confirmed Solana RPC connection, vetted application origin, exact policy, and deployment manifest (`cluster: "localnet"`, full genesis hash and Pocket/Registry/Census program IDs). These values come from trusted configuration, never the consent request. The RPC genesis is checked before creating consent and before each activation/signature. Known devnet/mainnet genesis hashes are refused. A fresh local genesis is not evidence that an unreviewed program is safe: load the reviewed binaries yourself.
+`options` contains the operator's bot token, a confirmed Solana RPC connection, vetted application origin, exact policy, and deployment (cluster, full genesis hash and Pocket/Registry/Census program IDs). Build it from the operator's [deployment manifest](../../docs/DEPLOYMENTS.md), named by `GHOSTLINK_DEPLOYMENT` like the services: `botDeployment(loadDeploymentConfig(), await connection.getGenesisHash())`, with `botDeployment` from `@ghostlink/common` and `loadDeploymentConfig` from `@ghostlink/service-kit`. These values come from trusted configuration, never the consent request. The RPC genesis is checked before creating consent and before each activation/signature. The devnet and mainnet genesis hashes are refused unless the deployment is for that cluster and uses its own program IDs, never the built-in ones. A fresh local genesis is not evidence that an unreviewed program is safe: load the reviewed binaries yourself.
 
 Keep the bot token, database encryption key and RPC credentials in secret storage outside source control. Terminate HTTPS at an authenticated deployment boundary, redact Authorization headers and disable request-body logging. Restrict the database directory to the service account; on Windows configure its ACL explicitly. The service binds loopback in this example. Forwarded client IP headers are deliberately not trusted by the reference rate limiter; configure proxy-level limits for a real deployment. The server permits eight active operations and refuses excess work with 503; it does not retain an unbounded waiting queue. Configure RPC transport timeouts and cancellation as part of the operator connection.
 

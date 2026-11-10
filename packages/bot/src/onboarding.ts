@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { PublicKey, type AccountInfo, type GetAccountInfoConfig, type RpcResponseAndContext } from "@solana/web3.js";
 import {
-  FIELD_PRIME, bytesToHex, domainHash, fieldToBytes32, hexToBytes, pocketPda, policyHash, toBase58,
+  FIELD_PRIME, bytesToHex, checkBotDeployment, domainHash, fieldToBytes32, hexToBytes, pocketPda, policyHash, toBase58,
   type Policy,
 } from "@ghostlink/common";
 import { derivePocket, policyFromDto, policyToDto, signIntent, softwareSession, type IntentParams, type SignedIntent } from "@ghostlink/sdk";
@@ -23,6 +23,11 @@ export interface BotOnboardingOptions {
   chain: AuthorizationChain;
   /** Vetted partner origin chosen by the operator, never by a request body. */
   appOrigin: string;
+  /**
+   * The deployment and the exact genesis it runs on, from trusted operator
+   * configuration: `botDeployment(manifest, genesisHash)` of
+   * `@ghostlink/common`. A public cluster needs its own program IDs.
+   */
   deployment: BotDeployment;
   /** Exact permissions presented for consent. Config changes affect new requests only. */
   policy: Policy;
@@ -67,18 +72,14 @@ export class BotOnboarding {
   #clock: () => number;
 
   constructor(options: BotOnboardingOptions) {
-    if (options.deployment.cluster !== "localnet") throw new Error("V2 bot onboarding is localnet-only until a deployment is verified");
+    // Same rule as the SDK and services: a local validator, or a public cluster's
+    // own genesis with program IDs that are not the built-in (V1-on-devnet) ones.
+    checkBotDeployment(options.deployment);
+    this.#deployment = structuredClone(options.deployment);
     this.#token = options.botToken;
     this.#store = options.store;
     this.#chain = options.chain;
     this.#origin = exactHttpsOrigin(options.appOrigin);
-    this.#deployment = structuredClone(options.deployment);
-    for (const id of [options.deployment.genesisHash, options.deployment.pocketProgram, options.deployment.registryProgram, options.deployment.censusProgram]) {
-      if (new PublicKey(id).toBase58() !== id) throw new Error("invalid deployment identity");
-    }
-    if (["EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG", "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d"].includes(options.deployment.genesisHash)) {
-      throw new Error("V2 bot onboarding requires a disposable local validator");
-    }
     writePolicy(new BorshWriter(), options.policy);
     if (options.policy.maxSlippageBps > 10_000 || options.policy.sessionMaxSlots === 0n) throw new Error("invalid onboarding policy");
     this.#policy = policyFromDto(policyToDto(options.policy));

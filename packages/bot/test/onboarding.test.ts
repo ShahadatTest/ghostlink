@@ -248,3 +248,35 @@ describe("durable bot authorization", () => {
     expect((await post()).status).toBe(200);
   });
 });
+
+describe("bot deployments", () => {
+  const DEVNET = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG";
+  const own = { cluster: "devnet" as const, genesisHash: DEVNET, pocketProgram: new PublicKey(new Uint8Array(32).fill(3)).toBase58(),
+    registryProgram: new PublicKey(new Uint8Array(32).fill(1)).toBase58(), censusProgram: new PublicKey(new Uint8Array(32).fill(2)).toBase58() };
+
+  it("refuses public genesis with the built-in programs and malformed identities", () => {
+    const w = world(), store = w.store();
+    const make = (d: unknown) => () => new BotOnboarding({ ...w.options, deployment: d as typeof deployment, store });
+    expect(make({ ...deployment, genesisHash: DEVNET })).toThrow(/localnet deployment cannot name the devnet genesis/);
+    expect(make({ ...deployment, cluster: "devnet", genesisHash: DEVNET })).toThrow(/built-in program ID.*preserved V1/);
+    expect(make({ ...own, genesisHash: deployment.genesisHash })).toThrow(/not the devnet genesis/);
+    expect(make({ ...own, pocketProgram: "not-an-address" })).toThrow(/pocketProgram must be a canonical/);
+    expect(make({ ...own, extra: true })).toThrow(/exactly cluster/);
+    expect(make(own)).not.toThrow();
+  });
+
+  it("creates and confirms consent for a deployment's own pocket program", async () => {
+    const w = world();
+    w.setGenesis(DEVNET);
+    const m = new BotOnboarding({ ...w.options, deployment: own, store: w.store() });
+    const { consent } = await m.create(initData(), w.input);
+    expect(consent.deployment).toEqual(own);
+    const { pocketPda } = await import("@ghostlink/common");
+    expect(consent.pocket).toBe(new PublicKey(pocketPda(23n, new PublicKey(own.pocketProgram).toBytes()).address).toBase58());
+    w.activate(consent);
+    expect((await m.confirm(initData(), consent.id)).state).toBe("confirmed");
+    // The same account owned by the built-in pocket program is not this deployment's pocket.
+    w.setInfo({ ...pocketAccount(consent), owner: new PublicKey(deployment.pocketProgram) });
+    await expect(m.confirm(initData(), consent.id)).rejects.toThrow();
+  });
+});
