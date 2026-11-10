@@ -26,9 +26,16 @@ pnpm -r build
 
 `pnpm -r build` also builds both examples with `next build`, so a successful build means they compile.
 
-## 2. Make proving keys and programs
+## 2. Get proving files and build the programs
 
-Follow [Fresh local proving setup](../SETUP.md#fresh-local-proving-setup) in a disposable branch: it builds the circuits into `circuits/build` (the identity app proves with these files), builds the programs, rebuilds the packages so the server-side verifying key matches, and runs the full local journey once. On Windows, run the shell scripts in WSL.
+Download the development proving files into `circuits/build` (the identity app proves with these), then build the programs. On Windows, run the shell script in WSL.
+
+```bash
+node scripts/proving-artifacts.mjs fetch   # checked by SHA-256 against circuits/keys/proving-artifacts.json
+bash scripts/build-programs.sh
+```
+
+To build the circuits and your own keys instead, follow [Fresh local proving setup](../SETUP.md#fresh-local-proving-setup) in a disposable branch.
 
 The `.wasm` and `.zkey` files stay in `circuits/build`, which is not committed. The identity app serves them to the browser itself on a local validator (the route `/circuits/[name]`), so you never copy them anywhere.
 

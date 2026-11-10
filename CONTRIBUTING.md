@@ -35,7 +35,7 @@ bash scripts/build-programs.sh   # registry, census, pocket and the test CPI cal
 bash scripts/test-programs.sh    # Rust unit tests, vectors, proof checks, LiteSVM flows
 ```
 
-The committed fixture proofs and verifying keys in `circuits/keys/` are enough for the test suite to pass. Without built circuit artifacts, the tests that generate new proofs are skipped, and the service shutdown tests run only on Linux and macOS; CI runs them all. You never need to regenerate proving keys for a normal change. During `pnpm install`, the "Ignored build scripts" notice is expected: those optional native builds are not needed. The [setup guide](docs/SETUP.md) covers fresh circuit builds and the full local-validator end-to-end run (`bash scripts/localnet-e2e.sh`).
+The committed fixture proofs and verifying keys in `circuits/keys/` are enough for the test suite to pass. Without circuit artifacts in `circuits/build`, the tests that generate new proofs are skipped (`node scripts/proving-artifacts.mjs fetch` downloads them), and the service shutdown tests run only on Linux and macOS; CI runs them all. You never need to regenerate proving keys for a normal change. During `pnpm install`, the "Ignored build scripts" notice is expected: those optional native builds are not needed. The [setup guide](docs/SETUP.md) covers fresh circuit builds and the full local-validator end-to-end run (`bash scripts/localnet-e2e.sh`).
 
 Install `node_modules` separately on each operating system. Copying it between Windows and Linux breaks platform-specific dependencies.
 

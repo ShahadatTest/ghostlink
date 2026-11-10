@@ -31,7 +31,7 @@ bash scripts/build-programs.sh
 bash scripts/test-programs.sh
 ```
 
-The committed JSON proofs and verifying keys are enough for Rust/LiteSVM tests. You do not need to regenerate setup keys first. Proving through the SDK needs local or hosted circuit artifacts.
+The committed JSON proofs and verifying keys are enough for Rust/LiteSVM tests. You do not need to regenerate setup keys first. Proving through the SDK needs circuit artifacts: `node scripts/proving-artifacts.mjs fetch` downloads the development ones that match the committed verifying keys into `circuits/build`, with no circom and no change to the checkout. The next section is only for building your own.
 
 ## Fresh local proving setup
 

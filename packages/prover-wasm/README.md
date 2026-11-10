@@ -8,8 +8,9 @@ A login proof takes seconds. In a web page, prove in a Web Worker with `createWo
 import { createWorkerProver } from "@ghostlink/prover-wasm";
 import { GhostLink } from "@ghostlink/sdk";
 
-// The .wasm and .zkey files come from `bash scripts/build-circuits.sh` in the
-// repository (circuits/build/). They are not published yet: host your own copies.
+// Development .wasm and .zkey files: `node scripts/proving-artifacts.mjs fetch` in the
+// repository downloads them into circuits/build/ and checks them against the SHA-256
+// pins in circuits/keys/proving-artifacts.json. Host your own copies for your app.
 const prover = createWorkerProver({
   login: {
     wasmUrl: "/circuits/login.wasm",

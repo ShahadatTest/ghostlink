@@ -19,4 +19,19 @@ Publishing runs only from the manual `release` workflow in GitHub Actions. It bu
 
 npm never allows a version number to be reused, even after unpublishing, so read the dry-run output before publishing.
 
+## GitHub release and proving files
+
+Each tagged release carries the package archives (`pnpm pack:bot` writes them and `SHA256SUMS` to `artifacts/sdk/`) and the development proving files that match the committed verifying keys: `login.wasm`, `login_dev.zkey`, `owner.wasm` and `owner_dev.zkey`. `circuits/keys/proving-artifacts.json` pins their release, sizes and SHA-256 digests, and `node scripts/proving-artifacts.mjs fetch` downloads and checks them.
+
+When the verifying keys change (a new development setup or a ceremony), the proving files change with them. In the same pull request, update the pins to the new files and the release that will carry them, then attach the files to that release:
+
+```bash
+node scripts/proving-artifacts.mjs verify   # the local files match the pins
+gh release create vX.Y.Z --prerelease --title "vX.Y.Z" --notes-file <notes> \
+  circuits/build/login_js/login.wasm circuits/build/login_dev.zkey \
+  circuits/build/owner_js/owner.wasm circuits/build/owner_dev.zkey artifacts/sdk/*.tgz artifacts/sdk/SHA256SUMS
+```
+
+Proving keys are public data, but development keys are single-party: say so in the release notes.
+
 After the first release you can switch to [trusted publishing](https://docs.npmjs.com/trusted-publishers), which needs no long-lived token, and then delete `NPM_TOKEN`.

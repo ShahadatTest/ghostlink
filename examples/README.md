@@ -20,7 +20,7 @@ The last two work together through the [identity handoff](../docs/IDENTITY-HANDO
 
 ## Trying the sign-in in a browser
 
-You need the local stack and the circuit files from [docs/SETUP.md](../docs/SETUP.md) (`circuits/build`, which is never committed). Three terminals:
+You need the local stack ([docs/SETUP.md](../docs/SETUP.md)) and the circuit files in `circuits/build`, which are never committed: `node scripts/proving-artifacts.mjs fetch` downloads them. Three terminals:
 
 | # | Where | Command | Serves |
 | --- | --- | --- | --- |

@@ -63,14 +63,15 @@ ok    built against an unknown tree              rejected: unknown registry root
 ok    tampered public signal                     rejected: proof failed verification
 ```
 
-Then try the [bot session example](examples/bot-session/src/index.ts) (`pnpm --filter @ghostlink/example-bot-session start`), or run **the whole system on a local validator** (Linux or WSL with the Solana toolchain and circom, see [setup](docs/SETUP.md)). Proving needs circuit artifacts that are not committed, so build them first, on a scratch branch: that step creates throwaway proving keys and rewrites the committed verifying keys.
+Then try the [bot session example](examples/bot-session/src/index.ts) (`pnpm --filter @ghostlink/example-bot-session start`), or run **the whole system on a local validator** (Linux or WSL with the Solana toolchain, see [setup](docs/SETUP.md)). Proving needs circuit files that are too large for Git, so download the development ones, which match the committed verifying keys:
 
 ```bash
-bash scripts/build-circuits.sh   # circuit artifacts and throwaway development keys
-bash scripts/build-programs.sh   # the programs embed the new verifying keys
-pnpm -r build
-bash scripts/localnet-e2e.sh     # register → snapshot → consent → prove → open → fund → trade → recover
+node scripts/proving-artifacts.mjs fetch   # development proving files from the v0.1.0 release, checked by SHA-256
+bash scripts/build-programs.sh
+bash scripts/localnet-e2e.sh               # register → snapshot → consent → prove → open → fund → trade → recover
 ```
+
+To build the circuits and your own development keys instead (needs circom), see [fresh local proving setup](docs/SETUP.md#fresh-local-proving-setup).
 
 ## Use it
 
@@ -241,10 +242,12 @@ pnpm test:package    # installs the archives into a clean project and checks the
 
 | Piece | State |
 | --- | --- |
-| Programs, circuits, SDK and services (V2 protocol) | Built and tested. CI runs more than 440 automated tests: TypeScript, Rust, LiteSVM program flows, circuits, runnable examples and installed-package checks |
+| Programs, circuits, SDK and services (V2 protocol) | Built and tested. CI runs more than 590 automated tests: TypeScript, Rust, LiteSVM program flows, circuits, runnable examples and installed-package checks |
 | Full journey on a local validator | Passing: register, snapshot, consent, prove, open, fund, trade and recover |
 | [Hosted devnet app](https://app.ghostlink.software) | Live with test tokens, running the earlier V1 deployment. [Walkthrough](docs/WALKTHROUGH.md) |
-| Self-hosted deployments | Supported: generate keys, build, deploy and configure from one [deployment manifest](docs/DEPLOYMENTS.md). Tested on a local validator with fresh program IDs |
+| Self-hosted deployments | Supported: generate keys, build, deploy and configure from one [deployment manifest](docs/DEPLOYMENTS.md), then run the five services with one [script](docs/SELF-HOSTING.md). Tested on a local validator with fresh program IDs |
+| Sign-in for any site | A reference [identity app](examples/identity-app) and a [popup handoff](docs/IDENTITY-HANDOFF.md): a site adds a button and never holds the user's identity. [Next.js guide](docs/guides/nextjs-login.md) |
+| Releases | [v0.1.0](https://github.com/Ghostlink-Labs/ghostlink/releases/tag/v0.1.0): package archives and development proving files. [Changelog](CHANGELOG.md). Not on npm yet |
 | Official public V2 deployment | Not yet; mainnet not yet |
 
 **On the way to mainnet:**
