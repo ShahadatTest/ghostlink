@@ -99,7 +99,7 @@ bash scripts/selfhost.sh status --config ~/ghostlink/selfhost.env --wait 300
 
 `start` launches each service as its own `node services/<name>/dist/index.js` process in an otherwise empty environment, writes its PID to `GHOSTLINK_STATE_DIR/run/` and appends its output to `GHOSTLINK_STATE_DIR/logs/<name>.log`, then waits until each answers `/health`. A service that exits during startup is reported with the end of its log, which names the problem (see [troubleshooting](#troubleshooting)). Running services are left alone, so `start` can be repeated after fixing one.
 
-`status` prints one line per service and exits 0 only when every service is running and **ready**; `--wait <seconds>` waits for that. Ready means the service's `/ready` answers 200:
+`status` prints one line per service and exits 0 only when every service is running and **ready**; `--wait <seconds>` waits for that. Because the indexer refuses reads while each poll scans, `status` retries a not-ready answer a few times before reporting it. Ready means the service's `/ready` answers 200:
 
 | Service | Ready when |
 | --- | --- |

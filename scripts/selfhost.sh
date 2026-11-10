@@ -229,12 +229,24 @@ wait_alive() {
   done
 }
 
+# A service's /ready line. The indexer answers 503 for the length of every poll's scan, so a
+# refusal is retried a few times, 0.7 seconds apart, before it is reported.
+readiness() {
+  local line attempt
+  for attempt in 1 2 3 4; do
+    if line="$(helper probe "$(url_of "$1")/ready")"; then echo "$line"; return 0; fi
+    [ "$attempt" -eq 4 ] || sleep 0.7
+  done
+  echo "$line"
+  return 1
+}
+
 # One line per service; returns 0 only when every service is running and ready.
 report() {
   local svc all=0 line payer
   for svc in $SERVICES; do
     if running "$svc"; then
-      line="$(helper probe "$(url_of "$svc")/ready")" || all=1
+      line="$(readiness "$svc")" || all=1
       line="running (pid $(pid_of "$svc")) $(url_of "$svc"): $line"
       payer=""
       case "$svc" in
@@ -288,11 +300,13 @@ case "$COMMAND" in
   status)
     [ -d "$STATE" ] || die "no state in $STATE; run init or start first"
     GENESIS="$(cat "$STATE/genesis" 2>/dev/null || true)"
-    if [ -n "$WAIT" ]; then
-      deadline=$((SECONDS + WAIT))
-      until report > /dev/null || [ "$SECONDS" -ge "$deadline" ]; do sleep 0.7; done
-    fi
-    report
+    deadline=$((SECONDS + ${WAIT:-0}))
+    # Print the report that decided the exit status, never a fresh one.
+    until summary="$(report)"; do
+      [ "$SECONDS" -lt "$deadline" ] || { echo "$summary"; exit 1; }
+      sleep 0.7
+    done
+    echo "$summary"
     ;;
   stop)
     [ -d "$STATE/run" ] || { echo "nothing to stop"; exit 0; }
