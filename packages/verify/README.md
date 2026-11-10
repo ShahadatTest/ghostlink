@@ -3,33 +3,43 @@
 Server-side verification of GhostLink login proofs. A backend checks that a zero-knowledge proof is valid, was made for **its** domain, makes the claims it asked for, and was built against tree roots it trusts. No transaction and no wallet address are involved.
 
 ```ts
-import { verifyLogin, verifyLoginChallenge } from "@ghostlink/verify";
+import { holdingsClaim, verifyLogin, verifyLoginChallenge } from "@ghostlink/verify";
+
+// What your server already has: the decoded sign-in request, its single-use nonce store, and your own RPC.
+declare const body: { challengeId: string; proof: object; publicSignals: string[]; key32: Uint8Array; expirySlot: bigint; signature: Uint8Array };
+declare const challenges: { take(id: string): Promise<Uint8Array | undefined> };
+declare const rpc: { getSlot(commitment: "confirmed"): Promise<number> };
+declare const gatedMint: string; // the token mint you gate on, as a base58 address
 
 // The 32-byte nonce you issued for this login attempt. Take it atomically (get and delete),
 // so it can be used once, and refuse it after a short expiry.
 const nonce = await challenges.take(body.challengeId);
-const currentSlot = BigInt(await connection.getSlot("confirmed")); // your own RPC, never the client
+const currentSlot = BigInt(await rpc.getSlot("confirmed")); // your own RPC, never the client
+const { key32, expirySlot, signature } = body;
 
 const result = await verifyLogin({
   proof: body.proof,                  // the SDK's LoginProof.snarkjsProof
   publicSignals: body.publicSignals,  // 12 decimal strings, in circuit order
   expectedDomain: "https://app.example.com",
-  roots: trustedRoots,                // indexer URL or a function reading the on-chain root rings
+  roots: "http://127.0.0.1:8787",     // your indexer's URL, or a function reading the on-chain root rings
   expect: {
-    holdsAtLeast: { mintHi, mintLo, threshold: 100_000_000n }, // optional token gate...
-    minSlot: currentSlot - 10_000n,                            // ...which needs a freshness bound
-    session: { key32, expirySlot, currentSlot },               // bind the proof to one session key
+    // optional token gate: at least 100 tokens (6 decimals) of the mint...
+    holdsAtLeast: holdingsClaim(gatedMint, 100_000_000n),
+    minSlot: currentSlot - 10_000n,   // ...which needs a freshness bound
+    session: { key32, expirySlot, currentSlot }, // bind the proof to one session key
   },
 });
 
-// Replay control: the proof's session key must have signed your nonce.
-if (nonce && result.ok && verifyLoginChallenge({ key32, nonce, signature })) {
+if (!result.ok) {
+  console.warn(`login refused: ${result.code}`, result.reason); // branch on the code, log the reason
+} else if (nonce && verifyLoginChallenge({ key32, nonce, signature })) {
+  // Replay control passed: the proof's session key signed your nonce.
   // result.appId is the user's stable, app-scoped ID: the same user always gets the same ID
   // on your site, and a different, unlinkable ID on every other site.
 }
 ```
 
-`key32`, `expirySlot` and `signature` come from the client's sign-in response (the SDK's `ghostlink:signIn` returns them as `session` and `challengeSignature`), decoded to bytes and a bigint.
+`key32`, `expirySlot` and `signature` come from the client's sign-in response (the SDK's `ghostlink:signIn` returns them as `session` and `challengeSignature`; `signInOutputToDto` encodes them), decoded to bytes and a bigint. The [SDK guide](../sdk/README.md#5-log-in-to-a-site) shows the browser side.
 
 Try it with a real proof: [`examples/verify-login`](../../examples/verify-login/src/index.ts).
 
@@ -42,7 +52,36 @@ Try it with a real proof: [`examples/verify-login`](../../examples/verify-login/
 5. The registry root (and census root, for holdings claims) is one your root source recognises. An indexer lists one root per completed 150-slot bucket, the roots the programs keep for at least 128 buckets.
 6. The Groth16 proof verifies against the login verifying key bundled with the package (`keys/login_vk.json`, compiled into the code).
 
-`verifyLogin` never throws on malformed input. It returns `{ ok: false, reason }`.
+`verifyLogin` never throws on malformed input. It returns `{ ok: false, code, reason }`.
+
+## Refusal codes
+
+A refusal carries a stable `code` beside the human-readable `reason`. Branch on the code; the reason text may be reworded.
+
+| Code | Meaning |
+| --- | --- |
+| `malformed_input` | The parameters are not the expected shape (for example, decoded request data). |
+| `malformed_signals` | The public signals are not 12 canonical field elements. |
+| `wrong_domain` | The proof was made for another site. |
+| `claim_missing` | You asked for a holdings claim (or a snapshot bound), the proof makes none. |
+| `wrong_mint` | The claim is for another mint. |
+| `threshold_too_low` | The proved threshold is below yours. |
+| `snapshot_too_old` | The proof's snapshot bound is older than `expect.minSlot`. |
+| `wrong_session` | The proof is bound to another session key or expiry. |
+| `session_expired` | The session's expiry slot has passed. |
+| `session_too_long` | The session expires further ahead than `maxSessionSlots`. |
+| `wrong_home` | The proof is bound to another home address. |
+| `wrong_authorization` | A login used as a pocket authorization or the reverse, or another policy, deployment or revocation epoch. |
+| `unknown_root` | The registry or census root is not one your root source knows. |
+| `malformed_proof` | The proof object cannot be parsed. |
+| `invalid_proof` | The Groth16 proof does not verify. |
+| `invalid_expectation` | Your `expectedDomain` or `expect` values are malformed, or a token gate lacks `minSlot`: a server bug. |
+| `server_configuration` | No root source, no usable verifying key, or a runtime that cannot verify (see Deploying). |
+| `roots_unavailable` | The root source failed or answered in an unexpected shape; retry. |
+
+## One claim shape
+
+`expect.holdsAtLeast` takes a `HoldingsClaim` (`{ mint, threshold }`, from `@ghostlink/common`), the same shape the SDK proves. `holdingsClaim(mint, threshold)` builds and checks one from a base58 address or 32 bytes. The older `{ mintHi, mintLo, threshold }` form (decimal halves of the mint, from `claimMintFields(mint)`) is still accepted.
 
 ## Token gates need a freshness bound
 

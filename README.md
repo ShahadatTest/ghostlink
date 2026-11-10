@@ -74,57 +74,117 @@ bash scripts/localnet-e2e.sh     # register → snapshot → consent → prove �
 
 ## Use it
 
-### Gate your site with a private login
+One program, from creating the client to a verified login, a bot with a budget and getting the funds back. Every value is built here or declared as something your app already has (`declare`), and the repository's packaging check compiles these examples against the packed packages. Run the reference services on a local validator with `GHOSTLINK_KEEP_RUNNING=1 bash scripts/localnet-e2e.sh` to try it; [`services/e2e/src/run.ts`](services/e2e/src/run.ts) makes the same calls end to end. The [SDK guide](packages/sdk/README.md) explains each step, the errors and the options.
 
-The user's browser builds the proof with `@ghostlink/sdk`. The wallet signs a fixed message, the identity secret is derived on the device, and only the proof and its public inputs leave it. Your backend checks the proof with `@ghostlink/verify`:
+### Connect, register, snapshot
 
 ```ts
-import { verifyLogin, verifyLoginChallenge } from "@ghostlink/verify";
+import { GhostLink, deriveIdentity, jsonRpcChainReader } from "@ghostlink/sdk";
+import { createWorkerProver } from "@ghostlink/prover-wasm";
+import { LOCALNET_DEPLOYMENT, toBase58 } from "@ghostlink/common";
 
-const nonce = await challenges.take(body.challengeId);    // single-use, short-lived, issued by you
-const currentSlot = BigInt(await rpc.getSlot("confirmed")); // your own RPC, never the client
+// From your wallet connection: the 32-byte public key and its Ed25519 signMessage.
+declare const walletPublicKey: Uint8Array;
+declare const signMessage: (message: Uint8Array) => Promise<Uint8Array>;
+// The token mint your site gates on.
+declare const gatedMint: Uint8Array;
 
-const result = await verifyLogin({
-  proof: body.proof,                  // LoginProof.snarkjsProof from the SDK
-  publicSignals: body.publicSignals,
-  expectedDomain: "https://app.example.com",
-  roots: trustedRoots,                // your indexer, or the on-chain root rings; never the client
-  expect: {
-    holdsAtLeast: { mintHi, mintLo, threshold: 100_000_000n },  // optional token gate...
-    minSlot: currentSlot - 10_000n,                             // ...with a freshness bound
-    session: { key32, expirySlot, currentSlot },                // bind the proof to one session key
-  },
+const client = await GhostLink.init({
+  cluster: "localnet",
+  deployment: LOCALNET_DEPLOYMENT,          // on devnet/mainnet: your deployment manifest (docs/DEPLOYMENTS.md)
+  indexer: "http://127.0.0.1:8787",         // the services you run or trust
+  relayer: "http://127.0.0.1:8788",
+  chain: jsonRpcChainReader("http://127.0.0.1:8899"),
+  prover: createWorkerProver({              // proofs are made on this device, from circuits/build artifacts
+    login: { wasmUrl: "/circuits/login.wasm", zkeyUrl: "/circuits/login.zkey", wasmSha256: "<sha256>", zkeySha256: "<sha256>" },
+    owner: { wasmUrl: "/circuits/owner.wasm", zkeyUrl: "/circuits/owner.zkey", wasmSha256: "<sha256>", zkeySha256: "<sha256>" },
+  }),
+  // In Node, also pass origin: "https://app.example.com"; a browser always uses its own origin.
 });
 
-// A copied proof is not a login: the session key must also have signed your nonce.
-if (nonce && result.ok && verifyLoginChallenge({ key32, nonce, signature })) {
-  signIn(result.appId);  // stable for your site, unlinkable elsewhere
+// The identity secret is derived from two wallet signatures over a fixed text and never leaves the device.
+const identity = await deriveIdentity(signMessage, { cluster: "localnet", domain: "id.example.com", address: toBase58(walletPublicKey) });
+await client.register({ identity, wallet: walletPublicKey, signMessage }); // once per wallet; the relayer pays
+await client.snapshot({ wallet: walletPublicKey, mint: gatedMint });       // records the balance for a token gate
+// Both become provable when their 150-slot root bucket ends, about a minute later: wait for it.
+const witness = await client.witness({ identity, wallet: walletPublicKey, mint: gatedMint, wait: { timeoutMs: 180_000 } });
+```
+
+### Gate your site with a private login
+
+The browser proves; your backend checks the proof with `@ghostlink/verify`. The proof says "registered, held at least 100 of this token in the last hour" and contains no wallet address.
+
+```ts
+import { bytesToHex, hexToBytes, loginChallengeDigest } from "@ghostlink/common";
+import { holdingsClaim, verifyLogin, verifyLoginChallenge } from "@ghostlink/verify";
+
+declare const nonce: Uint8Array; // single-use, short-lived, issued by your backend for this attempt
+
+// Browser
+const login = await client.prove({ identity, witness, claim: { mint: gatedMint, threshold: 100_000_000n, maxAgeSlots: 9_000n },
+  expirySlot: (await client.currentSlot()) + 9_000n });
+const body = { proof: login.proof.snarkjsProof, publicSignals: login.proof.publicSignals, key32: bytesToHex(login.signer.key32),
+  expirySlot: login.expirySlot.toString(), signature: bytesToHex((await login.signer.sign(loginChallengeDigest(nonce))).signature) };
+
+// Backend: currentSlot from your own RPC, never from the client.
+async function signIn(request: typeof body, issued: Uint8Array, currentSlot: bigint): Promise<string | null> {
+  const key32 = hexToBytes(request.key32);
+  const result = await verifyLogin({
+    proof: request.proof, publicSignals: request.publicSignals,
+    expectedDomain: "https://app.example.com",       // your page's origin
+    roots: "http://127.0.0.1:8787",                  // your indexer or the on-chain root rings; never the client
+    expect: {
+      holdsAtLeast: holdingsClaim(gatedMint, 100_000_000n),
+      minSlot: currentSlot - 10_000n,                // the freshness bound a token gate needs
+      session: { key32, expirySlot: BigInt(request.expirySlot), currentSlot },
+    },
+  });
+  if (!result.ok) return null;                       // result.code: "wrong_domain", "snapshot_too_old", ...
+  // A copied proof is not a login: the proof's session key must also have signed your nonce.
+  return verifyLoginChallenge({ key32, nonce: issued, signature: hexToBytes(request.signature) }) ? result.appId : null;
 }
 ```
 
-The [`@ghostlink/verify` guide](packages/verify/README.md) covers the full flow, including passkey sessions. `mintHi` and `mintLo` are the two halves of the mint address as decimal strings (`splitBytes32` in `@ghostlink/common`).
+`result.appId` is stable for your site and unlinkable to the same user's ID anywhere else.
 
 ### Give a bot a budget, not your keys
 
 ```ts
 import { sessionPublicKey, signIntent, softwareSession, SESSION_KIND_ED25519 } from "@ghostlink/sdk";
+import { conservativePolicy } from "@ghostlink/common";
+
+declare const usdcMint: Uint8Array, solMint: Uint8Array;
 
 // Bot: create a session key and share only its public half.
 const bot = softwareSession();
 const request = sessionPublicKey(SESSION_KIND_ED25519, bot.key32);
 
 // Owner, on their own trusted device: review the bot, policy, home and expiry, then approve.
-const authorization = await client.authorizeSession({ identity, witness, home, expirySlot, policy, session: request });
-const pocket = client.pocketFor(authorization, home, policy);
-await client.openSession(authorization, pocket, { mint: new Uint8Array(32), threshold: 0n, minSlot: 0n, claim: false });
+const policy = { ...conservativePolicy(), dailyCapUsdE6: 50_000_000n };  // at most $50 a day
+const authorization = await client.authorizeSession({ identity, witness, session: request, policy, home: walletPublicKey,
+  expirySlot: (await client.currentSlot()) + 50_000n });
+const pocket = client.pocketFor(authorization, walletPublicKey, policy);
+await client.openSession(authorization, pocket);  // the relayer pays; waits for confirmation
 
 // Bot: sign exact intents. The Pocket program checks the signature, policy and delivered output.
-const signed = await signIntent(pocket, bot, { nonce, inMint, inMax, outMint, outMin, deadlineSlot });
+const signed = await signIntent(pocket, bot, { nonce: 1n, inMint: usdcMint, inMax: 25_000_000n, outMint: solMint,
+  outMin: 160_000_000n, deadlineSlot: (await client.currentSlot()) + 500n });
 ```
 
-The bot never sees the owner's identity secret, proof inputs or wallet key. [`@ghostlink/bot`](packages/bot/README.md) adds Telegram authentication, encrypted key storage, durable nonces and order recovery. Read the [integration guide](docs/INTEGRATIONS.md) for what an integration must still do itself.
+### Get your funds back
 
-These snippets show the shape of the API, not a complete program. The one place every step runs end to end today, including creating the client, registering, building the witness and choosing a policy, is the local-validator journey in [`services/e2e/src/run.ts`](services/e2e/src/run.ts).
+Owner actions need only the identity: they work after a bot's key is lost or compromised.
+
+```ts
+import { associatedTokenAddress } from "@ghostlink/sdk";
+
+// Stop the bot now, then return every balance to the home wallet stored in the pocket.
+await client.submitOwnerAction(await client.proveOwnerAction({ identity, witness, action: "revoke" }));
+const sweep = await client.proveOwnerAction({ identity, witness, action: "sweep" });
+await client.submitOwnerAction(sweep, { tokenPairs: [{ source: associatedTokenAddress(pocket.address, usdcMint), mint: usdcMint }] });
+```
+
+The bot never sees the owner's identity secret, proof inputs or wallet key. [`@ghostlink/bot`](packages/bot/README.md) adds Telegram authentication, encrypted key storage, durable nonces and order recovery. Read the [integration guide](docs/INTEGRATIONS.md) for what an integration must still do itself, and [owner recovery](docs/OWNER-RECOVERY.md) for policy changes and lost replies.
 
 ## How it works
 

@@ -7,11 +7,29 @@ This is an experimental V2 integration contract, tested on local validators. The
 1. The bot backend authenticates its Telegram webhook/update source. If it uses a Mini App, it validates Telegram `initData`, its age and expected bot; never trust `initDataUnsafe` or a chat ID supplied by the browser.
 2. The backend creates a session signer scoped to that user and bot. Persisting it across restarts requires protected server-side key storage; never send the private session key through Telegram messages, URLs, analytics or the user's browser. A hardware-backed signer may implement `SessionSigner` if it produces the required signature format.
 3. Create a cryptographically random, short-lived authorization request ID. The server record binds the authenticated Telegram user, application origin, session public key, intended pocket, chain/deployment, requested policy, home and expiry. The link carries only an opaque identifier. Fetching a link does not approve it.
-4. In a separately trusted owner context, show those permissions. Derive the owner's identity and generate the proof locally with `authorizeSession`. Never put the identity secret in a third-party bot Mini App or backend. The SDK is not itself an isolation sandbox; a hosted origin-enforcing broker is still required for untrusted integrations.
-5. Submit `openSession` and wait for confirmation. The bot independently checks the RPC genesis/deployment, program ownership/layout, pocket, session key/expiry and active policy. Atomically mark the one-use request complete for that authenticated user; a replay or another user's callback must fail.
+4. In a separately trusted owner context, show those permissions. Derive the owner's identity (`deriveIdentity`), gather its witness (`client.witness`) and generate the proof locally with `authorizeSession`, or with the [owner consent controller](OWNER-CONSENT.md) for a shared owner application. Never put the identity secret in a third-party bot Mini App or backend. The SDK is not itself an isolation sandbox; a hosted origin-enforcing broker is still required for untrusted integrations.
+5. Submit `openSession`; it waits for confirmation. The bot independently checks the RPC genesis/deployment, program ownership/layout, pocket, session key/expiry and active policy. Atomically mark the one-use request complete for that authenticated user; a replay or another user's callback must fail.
 6. Before trading, obtain a quote and check the supported token programs, on-chain policy, fresh oracle data, output amount, deadline, liquidity and fees. Reserve a nonce durably per pocket. Sign the canonical intent and submit through the reviewed solver.
 7. Reconcile the transaction on chain before reporting success. A transport timeout is an unknown outcome, not permission to create a second trade. Persist the intent hash, nonce, signature if known, and state. Retry/reconcile the same intent; never silently issue a new nonce for an uncertain prior trade.
-8. Stop on session expiry/replacement, policy change, stale data or insufficient budget. Renewal needs fresh owner authorization. Support revoke and sweep-home recovery, and explain the current compromised-session recovery race documented in ADR 0002.
+8. Stop on session expiry/replacement, policy change, stale data or insufficient budget. Renewal needs fresh owner authorization. Support revoke and sweep-home recovery (`proveOwnerAction` then `submitOwnerAction`, see [owner recovery](OWNER-RECOVERY.md)), and explain the current compromised-session recovery race documented in ADR 0002.
+
+## SDK calls for each step
+
+The [SDK guide](../packages/sdk/README.md#the-whole-journey) runs this whole sequence as one program, and [`services/e2e/src/run.ts`](../services/e2e/src/run.ts) runs it against a local validator.
+
+| Step | Call | Notes |
+| --- | --- | --- |
+| Client | `GhostLink.init({ cluster, deployment, indexer, relayer, chain, prover, origin })` | `deployment` is the operator's manifest; `chain` is any `ChainReader` (`jsonRpcChainReader(url)` needs only `fetch`); `origin` is required outside a browser. |
+| Identity | `deriveIdentity(signMessage, { cluster, domain, address })` | Same wallet, domain, cluster and factor always give the same identity. |
+| Registration | `client.register(...)` or `client.registerInstructions(...)` | Once per wallet, forever. |
+| Token gate snapshot | `client.snapshot({ wallet, mint })` or `client.snapshotInstructions(...)` | One per holding per minute through the relayer. |
+| Witness | `client.witness({ identity, wallet, mint?, wait: { timeoutMs } })` | A new registration or snapshot is provable after its root bucket ends, about a minute. |
+| Login | `client.prove(...)`, then `verifyLogin` and `verifyLoginChallenge` on the backend | Branch on `result.code`. |
+| Bot session | `client.authorizeSession(...)`, `client.pocketFor(...)`, `client.openSession(...)` | Reads the revocation epoch from chain; refuses renewals the program would refuse. |
+| Trading | `signIntent`, `client.submitSignedIntent`, `client.intentStatus` | Persist before sending; reconcile, never re-sign, after a timeout. |
+| Recovery and changes | `client.proveOwnerAction(...)`, `client.submitOwnerAction(...)` or `client.ownerActionInstructions(...)`, `client.executeChangeInstructions(...)` | One proof per action: it binds the pocket's current owner action nonce. |
+
+Relayer refusals are `RelayerRequestError` with a stable `code` (`rate_limited`, `snapshot_cooldown`, `partner_only`, `simulation_failed`, ...); unknown outcomes are `RelayerOperationPendingError`, which keeps the operation to finish with `RelayerClient.settle`. The full list is in the [SDK guide](../packages/sdk/README.md#errors).
 
 The installed SDK provides public-key descriptors, local proof preparation, intent signing and explicit submission/status clients. The separate bot backend supplies Telegram authentication, encrypted consent/key storage and durable nonce/signed-order allocation using a stable business request key; the reference solver supplies an encrypted transaction journal and restart reconciliation. The trusted product UI, strategy scheduler, coordinated restore and live DEX route remain unfinished. See [transaction recovery](TRANSACTION-RECOVERY.md). No bot token is needed in the public SDK or browser bundle.
 

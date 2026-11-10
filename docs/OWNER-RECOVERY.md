@@ -1,6 +1,34 @@
 # Owner recovery destinations
 
-The PocketV3 localnet candidate returns funds only to the saved on-chain recovery home. An owner proof remains usable after losing or revoking a bot session. Read the current owner action nonce before proving; successful administrative actions consume it. The private owner interface revokes first, then explicitly approves each recovery batch. Existing deployed V1 programs are separate.
+The PocketV3 localnet candidate returns funds only to the saved on-chain recovery home. An owner proof remains usable after losing or revoking a bot session. Read the current owner action nonce before proving; successful administrative actions consume it. Existing deployed V1 programs are separate.
+
+## With the SDK
+
+`@ghostlink/sdk` does the reading, proving and submitting: revoke first, then recover each batch of token accounts. The client is the one from the [SDK guide](../packages/sdk/README.md#the-whole-journey), with a `chain` reader and an owner-circuit prover, opened at the origin whose pocket you recover.
+
+```ts
+import { associatedTokenAddress, type DerivedIdentity, type GhostLink } from "@ghostlink/sdk";
+
+declare const client: GhostLink;            // GhostLink.init({ ..., chain, prover }) as in the SDK guide
+declare const identity: DerivedIdentity;    // deriveIdentity with the registering wallet
+declare const walletPublicKey: Uint8Array;  // that wallet
+declare const pocketAddress: Uint8Array;    // client.pocketFor(...).address, or derivePocket(appId, home).address
+declare const mints: Uint8Array[];          // the tokens the pocket holds
+
+const witness = await client.witness({ identity, wallet: walletPublicKey });
+// 1. Stop the session: no bot can trade, and no authorization made before this can open a session again.
+await client.submitOwnerAction(await client.proveOwnerAction({ identity, witness, action: "revoke" }));
+// 2. Recover, at most two token accounts per request. The proof binds the current nonce; prove each batch afresh.
+for (let i = 0; i < mints.length; i += 2) {
+  const sweep = await client.proveOwnerAction({ identity, witness, action: "sweep" });
+  await client.submitOwnerAction(sweep, {
+    tokenPairs: mints.slice(i, i + 2).map(mint => ({ source: associatedTokenAddress(pocketAddress, mint), mint })),
+  });
+}
+const after = await client.pocketState(pocketAddress); // after.ownerActionNonce has moved on; after.home is unchanged
+```
+
+`proveOwnerAction` reads the pocket's current `owner_action_nonce` and recovery home through the client's `chain` reader, proves on the device, and refuses if the nonce moved while proving. `submitOwnerAction` sends the relayer request described below without `destination`, so the relayer selects or creates clean home-owned accounts, and waits for confirmation. A wallet that pays its own fees uses `ownerActionInstructions(sweep, { payer, tokenPairs })` instead; it needs explicit destinations that meet the same rules. Home and policy changes use `action: "propose"` with `change: { home }` or `change: { policy }`, and `action: "cancel"`; the reference relayer submits home changes only, so send a policy change with `ownerActionInstructions`. A staged change executes after the 24-hour timelock with `executeChangeInstructions`, which anyone may send.
 
 ## Token accounts
 
@@ -24,7 +52,7 @@ Use batches of up to two source accounts: two fresh destinations plus the proof 
 
 A successful response includes `signature` and resolved `tokenPairs: [{source,destination,mint}]`. These are public addresses, not authorization. Verify the consumed owner action nonce, unchanged home, complete source withdrawal and destination ownership/balances on the confirmed chain. Native SOL above Pocket rent is returned as part of the same sweep.
 
-After a lost response, check that same action's outcome. Query home-owned token accounts to find an auxiliary destination if needed; it may differ from the canonical associated address. Do not automatically produce another owner proof because an HTTP response was lost. The consumed nonce prevents replay from creating another account or withdrawing again. A new deliberate recovery step requires fresh chain state and a new proof.
+After a lost response, check that same action's outcome. With the SDK, call `submitOwnerAction` again with the same authorization: its request ID is the request's digest, so the relayer reconciles the original operation instead of sending another. Query home-owned token accounts to find an auxiliary destination if needed; it may differ from the canonical associated address. Do not automatically produce another owner proof because an HTTP response was lost. The consumed nonce prevents replay from creating another account or withdrawing again. A new deliberate recovery step requires fresh chain state and a new proof.
 
 ## Reproduction
 

@@ -13,9 +13,10 @@ const config = {
   prover: createWorkerProver({ login: { wasmUrl, zkeyUrl, wasmSha256, zkeySha256 } }), // proves in a Web Worker
 };
 
-// Your login flow (loginParams and sendToBackend are your app's code): gather the identity and
-// witness, prove on the device, then send the proof with a session-signed server challenge to
-// your backend, which checks both with @ghostlink/verify.
+// Your login flow (loginParams and sendToBackend are your app's code): derive the identity
+// (deriveIdentity) and gather its witness (client.witness), prove on the device, then send the
+// proof with a session-signed server challenge to your backend, which checks both with
+// @ghostlink/verify. The SDK guide shows each call.
 async function signIn(client: GhostLink): Promise<GhostLinkSession> {
   const session = await client.prove(await loginParams(client));
   await sendToBackend(session);
