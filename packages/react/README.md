@@ -1,6 +1,6 @@
 # @ghostlink/react
 
-React bindings for the [GhostLink SDK](../sdk/README.md): a provider that owns one GhostLink client and the signed-in session, a `useGhostLink` hook, and a drop-in `ContinueWithGhostLink` button. **V2 candidate: localnet only; not deployed.**
+React bindings for the [GhostLink SDK](../sdk/README.md): a provider that owns one GhostLink client and the signed-in session, a `useGhostLink` hook, and a drop-in `ContinueWithGhostLink` button. **Experimental: it runs on a local validator out of the box, and on other networks with your own [deployment](../../docs/DEPLOYMENTS.md); there is no official public deployment yet.**
 
 ```tsx
 import { ContinueWithGhostLink, GhostLinkProvider, useGhostLink } from "@ghostlink/react";

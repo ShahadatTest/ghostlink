@@ -1,6 +1,6 @@
 # @ghostlink/prover-wasm
 
-Device-side Groth16 prover for GhostLink. It downloads a circuit's WebAssembly witness generator and proving key once, checks them against the SHA-256 pins you give it, caches them, and runs snarkjs, so the identity secret never leaves the device. **V2 candidate: localnet only; not deployed.**
+Device-side Groth16 prover for GhostLink. It downloads a circuit's WebAssembly witness generator and proving key once, checks them against the SHA-256 pins you give it, caches them, and runs snarkjs, so the identity secret never leaves the device. **Experimental: there is no official public deployment yet; see [deployments](../../docs/DEPLOYMENTS.md).**
 
 A login proof takes seconds. In a web page, prove in a Web Worker with `createWorkerProver` so the page stays responsive. `createProver` proves on the calling thread, for code that already runs in a worker of its own, or in Node.
 
