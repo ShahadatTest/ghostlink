@@ -1,0 +1,29 @@
+{
+  "name": "@ghostlink/example-identity-app",
+  "version": "0.0.0",
+  "private": true,
+  "description": "A reference identity app: holds a GhostLink identity on its own origin and answers sites' sign-in requests through the handoff popup.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "dev": "next dev --port 3001",
+    "build": "next build",
+    "start": "next start --port 3001",
+    "typecheck": "next typegen && tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@ghostlink/common": "workspace:*",
+    "@ghostlink/prover-wasm": "workspace:*",
+    "@ghostlink/sdk": "workspace:*",
+    "@noble/curves": "^1.7.0",
+    "next": "16.4.6",
+    "react": "19.3.1",
+    "react-dom": "19.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "typescript": "^5.6.0"
+  }
+}
