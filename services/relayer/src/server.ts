@@ -13,6 +13,10 @@
  * pocket per invented origin, each costing rent): the budget and the
  * origin allowlist bound that.
  *
+ * Every error response is `{ error, code }`: `error` is a message for
+ * people, `code` a stable machine-readable reason clients branch on
+ * (`relayerErrorCode` below; the SDK's `RelayerErrorCode` lists them).
+ *
  * The instruction allowlist is this file: register, snapshot,
  * open_session, sweep_home (plus the home's missing token accounts),
  * propose/cancel change, revoke_session. Nothing else is ever built or
@@ -85,6 +89,53 @@ export interface RelayerDeps {
 
 const MAX_TOKEN_PAIRS = 16;
 
+/**
+ * Stable codes for the fixed messages this relayer answers with, including
+ * those thrown by its journal, submission and readiness modules. Other
+ * errors take their status's code. Messages may be reworded; codes may not.
+ */
+const ERROR_CODES: Readonly<Record<string, string>> = {
+  "rate limited": "rate_limited",
+  "that holding was snapshotted less than a minute ago": "snapshot_cooldown",
+  "this relayer only creates pockets for its partner apps": "partner_only",
+  "request ID is bound to different content": "request_conflict",
+  "submission not found": "not_found",
+  "transaction failed simulation; nothing was reserved or broadcast": "simulation_failed",
+  "relayer is draining": "draining",
+  "relayer not ready or busy; retain the original request": "not_ready",
+  "relayer not ready; retain the original request": "not_ready",
+  "relayer busy; retain the original request": "not_ready",
+  "relayer daily budget exhausted": "budget_exhausted",
+  "relayer funding reserve unavailable": "reserve_unavailable",
+  "relayer journal capacity exhausted": "journal_full",
+  "transaction simulation unavailable; nothing was reserved; retry the same request": "simulation_unavailable",
+  "account rent unavailable; try again later": "chain_unavailable",
+  "transaction context unavailable": "chain_unavailable",
+  "transaction fee unavailable or excessive": "chain_unavailable",
+  "census fee configuration unavailable; try again later": "census_fee_unavailable",
+  "census snapshot fee exceeds this relayer's limit": "snapshot_fee_too_high",
+};
+const STATUS_CODES: Readonly<Record<number, string>> = {
+  400: "bad_request", 403: "partner_only", 404: "not_found", 409: "request_conflict", 413: "body_too_large",
+  422: "simulation_failed", 429: "rate_limited", 500: "internal", 503: "unavailable",
+};
+
+/** The stable code of an HTTP error this relayer answers with. */
+export function relayerErrorCode(status: number, message: string): string {
+  return ERROR_CODES[message] ?? STATUS_CODES[status] ?? "unknown";
+}
+
+/** Answers an expected refusal as `{ error, code }`; anything else stays an opaque 500 from the router. */
+function coded(handler: Handler): Handler {
+  return async (request) => {
+    try { return await handler(request); }
+    catch (error) {
+      if (!(error instanceof HttpError)) throw error;
+      return { status: error.status, json: { error: error.message, code: relayerErrorCode(error.status, error.message) } };
+    }
+  };
+}
+
 export function buildServer(deps: RelayerDeps): Server & { drain(): void; readonly active: number; operations: RelayerOperations } {
   deps.journal.assertSubmissionAllowed();
   const { connection, payer } = deps;
@@ -119,7 +170,7 @@ export function buildServer(deps: RelayerDeps): Server & { drain(): void; readon
   interface Preparation { instructions: TransactionInstruction[]; rent: bigint; signers?: Keypair[];
     tokenPairs?: RelayerReceipt["tokenPairs"] }
   function paid(path: string, prepare: (request: Parameters<Handler>[0]) => Promise<Preparation>): void {
-    router.post(path, async request => {
+    router.post(path, coded(async request => {
       throttle(request.raw);
       if (draining) throw new HttpError(503, "relayer is draining");
       let release: (() => void) | undefined;
@@ -146,9 +197,9 @@ export function buildServer(deps: RelayerDeps): Server & { drain(): void; readon
         });
         return { status: receipt.state === "failed" ? 502 : ["confirmed", "finalized"].includes(receipt.state) ? 200 : 202, json: receipt };
       } finally { release?.(); }
-    });
+    }));
   }
-  router.get("/submissions/:requestIdHex", async ({ params, raw }) => {
+  router.get("/submissions/:requestIdHex", coded(async ({ params, raw }) => {
     throttle(raw);
     if (draining) throw new HttpError(503, "relayer is draining");
     const id = params.requestIdHex!;
@@ -157,7 +208,7 @@ export function buildServer(deps: RelayerDeps): Server & { drain(): void; readon
     if (!release) throw new HttpError(503, "relayer busy; retain the original request");
     try { return { json: await submissions.status(id) }; }
     finally { release(); }
-  });
+  }));
   router.get("/health", async () => ({
     json: {
       ok: true,
@@ -312,10 +363,10 @@ export function buildServer(deps: RelayerDeps): Server & { drain(): void; readon
   });
 
   // Convenience: derive a pocket address for an app id (read-only).
-  router.get("/pocket/:appIdHex", async ({ params }) => {
+  router.get("/pocket/:appIdHex", coded(async ({ params }) => {
     const appId = hex(params.appIdHex, 32, "appIdHex");
     return { json: { pocket: pocketPda(appId).toBase58() } };
-  });
+  }));
 
   const server = Object.assign(router.server(), { operations, drain: () => { draining = true; operations.drain(); } });
   server.once("listening", () => operations.start());

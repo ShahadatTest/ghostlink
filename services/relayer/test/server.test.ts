@@ -8,7 +8,8 @@ import { describe, expect, it, vi } from "vitest";
 import { Connection, Keypair, PublicKey, SystemProgram, Transaction, type VersionedTransaction } from "@solana/web3.js";
 import bs58 from "bs58";
 import { POCKET_ACCOUNT_SIZE, POCKET, CENSUS, REGISTRY, censusConfigPda } from "@ghostlink/service-kit";
-import { buildServer, type RelayerDeps } from "../src/server.js";
+import { readFileSync, readdirSync } from "node:fs";
+import { buildServer, relayerErrorCode, type RelayerDeps } from "../src/server.js";
 
 const payer = Keypair.generate();
 const genesisHash = Keypair.generate().publicKey.toBase58();
@@ -289,5 +290,48 @@ describe("relayer fee and creation boundary", () => {
         expect((await post(base, path, null)).status).toBe(400);
       }
     });
+  });
+
+  it("answers every refusal with its message and a stable code", async () => {
+    const connection = rpc(1_000_000_000, 100_000n);
+    await withServer({ connection: connection as unknown as Connection, maxSnapshotFeeLamports: 100_000n, allowedDomainHashes: new Set() },
+      async (base, server) => {
+        const body = async (response: Response) => ({ status: response.status, ...(await response.json()) });
+        expect(await body(await post(base, "snapshot", null))).toEqual({ status: 400, error: "expected a JSON object", code: "bad_request" });
+        expect(await body(await post(base, "open-session", { ...opening(), requestIdHex: randomBytes(32).toString("hex") })))
+          .toEqual({ status: 403, error: "this relayer only creates pockets for its partner apps", code: "partner_only" });
+        const first = snapshot();
+        expect((await post(base, "snapshot", first)).status).toBe(200);
+        expect(await body(await post(base, "snapshot", { ...first, holding: Keypair.generate().publicKey.toBase58() })))
+          .toEqual({ status: 409, error: "request ID is bound to different content", code: "request_conflict" });
+        expect(await body(await post(base, "snapshot", { ...snapshot(), wallet: first.wallet })))
+          .toEqual({ status: 429, error: "that holding was snapshotted less than a minute ago", code: "snapshot_cooldown" });
+        connection.setSnapshotFee(100_001n);
+        expect(await body(await post(base, "snapshot", snapshot())))
+          .toEqual({ status: 503, error: "census snapshot fee exceeds this relayer's limit", code: "snapshot_fee_too_high" });
+        connection.setSnapshotFee(100_000n);
+        connection.failSimulation({ InstructionError: [0, "Custom"] });
+        expect(await body(await post(base, "snapshot", snapshot())))
+          .toEqual({ status: 422, error: "transaction failed simulation; nothing was reserved or broadcast", code: "simulation_failed" });
+        expect(await body(await fetch(`${base}/submissions/${"ab".repeat(32)}`)))
+          .toEqual({ status: 404, error: "submission not found", code: "not_found" });
+        server.drain();
+        expect(await body(await post(base, "snapshot", snapshot()))).toEqual({ status: 503, error: "relayer is draining", code: "draining" });
+      });
+  });
+
+  it("gives every fixed refusal message in the relayer sources a specific code", () => {
+    const dir = new URL("../src/", import.meta.url);
+    const thrown = readdirSync(dir).filter(name => name.endsWith(".ts")).flatMap(name =>
+      [...readFileSync(new URL(name, dir), "utf8").matchAll(/new HttpError\((\d{3}), "([^"]+)"\)/g)].map(m => [Number(m[1]), m[2]!] as const));
+    expect(thrown.length).toBeGreaterThan(15);
+    for (const [status, message] of thrown) {
+      const code = relayerErrorCode(status, message);
+      expect(code, `${status} ${message}`).toMatch(/^[a-z_]+$/);
+      // A 503 or 429 must say which one: clients act differently on budget, cooldown or readiness.
+      if (status === 503 || status === 429) expect(code, message).not.toBe(status === 503 ? "unavailable" : "unknown");
+    }
+    expect(relayerErrorCode(400, "walletPubkey required")).toBe("bad_request");
+    expect(relayerErrorCode(418, "teapot")).toBe("unknown");
   });
 });
