@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { bundledLoginVerificationKey, loginChallengeDigest, verifyLogin, verifyLoginChallenge } from "../src/index.js";
+import { bundledLoginVerificationKey, claimMintFields, holdingsClaim, loginChallengeDigest, verifyLogin, verifyLoginChallenge } from "../src/index.js";
 import { bytesToHex, conservativePolicy, developmentSessionDeployment, hexToBytes } from "@ghostlink/common";
 import { ed25519 } from "@noble/curves/ed25519";
 
@@ -79,17 +79,54 @@ describe.skipIf(!built)("verifyLogin", () => {
     expect(res.appId).toBe(vectors.identity.appId);
   });
 
+  it("takes the canonical HoldingsClaim and the older mintHi/mintLo form alike", async () => {
+    const mint = hexToBytes(vectors.census.mint);
+    const minSlot = BigInt(pub.min_slot);
+    expect(claimMintFields(mint)).toEqual({ mintHi: pub.mint_hi, mintLo: pub.mint_lo });
+    expect(await verifyLogin({ ...base(), expect: { holdsAtLeast: holdingsClaim(mint, 100_000_000n), minSlot } })).toMatchObject({ ok: true });
+    expect(await verifyLogin({ ...base(), expect: { holdsAtLeast: { mint, threshold: 100_000_000n }, minSlot } })).toMatchObject({ ok: true });
+    expect(await verifyLogin({ ...base(), expect: { holdsAtLeast: { mint: new Uint8Array(32).fill(9), threshold: 1n }, minSlot } }))
+      .toEqual({ ok: false, code: "wrong_mint", reason: "claim is for a different mint" });
+    expect(await verifyLogin({ ...base(), expect: { holdsAtLeast: { mint: new Uint8Array(31), threshold: 1n }, minSlot } }))
+      .toEqual({ ok: false, code: "invalid_expectation", reason: "malformed expected mint" });
+    expect(await verifyLogin({ ...base(), expect: { holdsAtLeast: { mint, threshold: 200_000_000n }, minSlot } }))
+      .toMatchObject({ ok: false, code: "threshold_too_low" });
+  });
+
+  it("gives every refusal a stable code beside its reason", async () => {
+    const cases: [Parameters<typeof verifyLogin>[0], string][] = [
+      [{ ...base(), publicSignals: ["1"] }, "malformed_signals"],
+      [{ ...base(), expectedDomain: "" }, "invalid_expectation"],
+      [{ ...base(), roots: undefined }, "server_configuration"],
+      [{ ...base(), roots: async () => { throw new Error("offline"); } }, "roots_unavailable"],
+      [{ ...base(), roots: async () => ({ registry: ["1"], census: [pub.census_root] }) }, "unknown_root"],
+      [{ ...base(), expect: { session: { key32: sessionKey32, expirySlot: expirySlot + 1n, currentSlot: expirySlot - 10n } } }, "wrong_session"],
+      [{ ...base(), expect: { session: { key32: sessionKey32, expirySlot, currentSlot: expirySlot } } }, "session_expired"],
+      [{ ...base(), expect: { session: { key32: sessionKey32, expirySlot, currentSlot: 0n, maxSessionSlots: 1n } } }, "session_too_long"],
+      [{ ...base(), expect: { home: new Uint8Array(32) } }, "wrong_home"],
+      [{ ...base(), expect: { pocket: { policy: conservativePolicy(), sessionKind: 0 } } }, "wrong_authorization"],
+      [{ ...base(), proof: { pi_a: [] } }, "malformed_proof"],
+      [{ ...base(), publicSignals: base().publicSignals.map((v, i) => (i === 3 ? "1" : v)) }, "invalid_proof"],
+      [null as never, "malformed_input"],
+    ];
+    for (const [params, code] of cases) {
+      const result = await verifyLogin(params);
+      expect(result, code).toMatchObject({ ok: false, code });
+      expect(typeof result.reason).toBe("string");
+    }
+  });
+
   it("refuses a holdings gate without a freshness bound, and enforces the bound it is given", async () => {
     // The census only grows: with no bound, this snapshot would pass forever.
     const holdsAtLeast = { mintHi: pub.mint_hi, mintLo: pub.mint_lo, threshold: 100_000_000n };
     expect(await verifyLogin({ ...base(), expect: { holdsAtLeast } })).toEqual({
-      ok: false, reason: "holdings claim needs a freshness bound: set expect.minSlot (0n accepts snapshots of any age)",
+      ok: false, code: "invalid_expectation", reason: "holdings claim needs a freshness bound: set expect.minSlot (0n accepts snapshots of any age)",
     });
     // 0n is the deliberate "any age" opt-out.
     expect(await verifyLogin({ ...base(), expect: { holdsAtLeast, minSlot: 0n } })).toMatchObject({ ok: true });
     expect(await verifyLogin({ ...base(), expect: { holdsAtLeast, minSlot: BigInt(pub.min_slot) } })).toMatchObject({ ok: true });
     expect(await verifyLogin({ ...base(), expect: { holdsAtLeast, minSlot: BigInt(pub.min_slot) + 1n } }))
-      .toEqual({ ok: false, reason: "snapshot window too old" });
+      .toEqual({ ok: false, code: "snapshot_too_old", reason: "snapshot window too old" });
     // A gate the server did not ask for needs no bound: plain login is unaffected.
     expect(await verifyLogin(base())).toMatchObject({ ok: true });
   });
@@ -123,10 +160,11 @@ describe.skipIf(!built)("verifyLogin", () => {
     try {
       const fresh = await import("../src/index.js");
       expect(await fresh.verifyLogin({ ...base(), expectedDomain: "https://other.example" }))
-        .toEqual({ ok: false, reason: "proof bound to a different domain" });
+        .toEqual({ ok: false, code: "wrong_domain", reason: "proof bound to a different domain" });
       const res = await fresh.verifyLogin(base());
       expect(res.ok).toBe(false);
       expect(res.reason).toMatch(/^proof verifier unavailable on this runtime \(server configuration\): snarkjs failed to load: /);
+      expect(res.code).toBe("server_configuration");
       vi.doUnmock("snarkjs");
       // A failed import is not cached: the next call loads snarkjs and verifies.
       expect(await fresh.verifyLogin(base())).toMatchObject({ ok: true });

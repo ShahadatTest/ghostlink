@@ -19,16 +19,19 @@
  * Loading this module needs no Node.js built-in: the verifying key is
  * compiled in (./login-vk.js) and snarkjs is imported on first use.
  */
-export { loginChallengeDigest } from "@ghostlink/common";
+export { loginChallengeDigest, holdingsClaim, claimMintFields, type HoldingsClaim, type HoldingsClaimFields } from "@ghostlink/common";
 import { ed25519 } from "@noble/curves/ed25519";
 import { LOGIN_VERIFICATION_KEY } from "./login-vk.js";
 import {
   FIELD_PRIME,
+  claimMintFields,
   domainHash,
   homeHash,
   loginChallengeDigest,
   pocketAuthorizationContext,
   sessionCommitment,
+  type HoldingsClaim,
+  type HoldingsClaimFields,
   type RootsResponse,
   type Policy,
   type SessionDeployment,
@@ -96,8 +99,13 @@ export interface VerifyLoginParams {
   /** Skip the root check. Only for tests; never in production. */
   allowUnverifiedRoots?: boolean;
   expect?: {
-    /** Token gate: at least `threshold` of this mint. Requires `minSlot`. */
-    holdsAtLeast?: { mintHi: string; mintLo: string; threshold: bigint };
+    /**
+     * Token gate: at least `threshold` base units of `mint` (a
+     * `HoldingsClaim`, e.g. `holdingsClaim(mintAddress, 100_000_000n)`).
+     * The older `{ mintHi, mintLo, threshold }` form is still accepted.
+     * Requires `minSlot`.
+     */
+    holdsAtLeast?: HoldingsClaim | HoldingsClaimFields;
     /**
      * Oldest census snapshot slot you accept: `currentSlot` from your own
      * RPC minus a window a little wider than the clients' `maxAgeSlots`
@@ -121,15 +129,38 @@ export interface VerifyLoginParams {
   fetchFn?: typeof fetch;
 }
 
-/** `ok` narrows the result: a success always carries `appId`, a refusal always carries `reason`. */
+/**
+ * Why `verifyLogin` refused, as a stable machine-readable value. Branch on
+ * the code; `reason` is a message for logs and may be reworded.
+ *
+ * Refusals of the proof: `wrong_domain`, `claim_missing`, `wrong_mint`,
+ * `threshold_too_low`, `snapshot_too_old`, `wrong_session`,
+ * `session_expired`, `session_too_long`, `wrong_home`,
+ * `wrong_authorization`, `unknown_root`, `malformed_input`,
+ * `malformed_signals`, `malformed_proof`, `invalid_proof`.
+ * Problems on your side: `invalid_expectation` (a malformed `expect` or
+ * `expectedDomain`), `server_configuration` (no root source, no verifying
+ * key, or a runtime that cannot verify), `roots_unavailable` (the root
+ * source failed; retry).
+ */
+export type VerifyLoginErrorCode =
+  | "malformed_input" | "malformed_signals" | "malformed_proof" | "invalid_proof"
+  | "wrong_domain" | "claim_missing" | "wrong_mint" | "threshold_too_low" | "snapshot_too_old"
+  | "wrong_session" | "session_expired" | "session_too_long" | "wrong_home" | "wrong_authorization" | "unknown_root"
+  | "invalid_expectation" | "server_configuration" | "roots_unavailable";
+
+/** `ok` narrows the result: a success always carries `appId`, a refusal always carries `code` and `reason`. */
 export type VerifyLoginResult =
   | {
       ok: true;
       /** The user's stable ID for THIS app as a canonical decimal string. */
       appId: string;
+      code?: undefined;
       reason?: undefined;
     }
-  | { ok: false; reason: string; appId?: undefined };
+  | { ok: false; code: VerifyLoginErrorCode; reason: string; appId?: undefined };
+
+const fail = (code: VerifyLoginErrorCode, reason: string): VerifyLoginResult => ({ ok: false, code, reason });
 
 const DECIMAL = /^(0|[1-9][0-9]*)$/;
 const MAX_U64 = (1n << 64n) - 1n;
@@ -157,56 +188,58 @@ export async function verifyLogin(params: VerifyLoginParams): Promise<VerifyLogi
   try {
     return await verifyLoginChecked(params);
   } catch {
-    return { ok: false, reason: "malformed login input" };
+    return fail("malformed_input", "malformed login input");
   }
 }
 
 async function verifyLoginChecked(params: VerifyLoginParams): Promise<VerifyLoginResult> {
   const signals = parseSignals(params.publicSignals);
-  if (!signals) return { ok: false, reason: "malformed public signals" };
+  if (!signals) return fail("malformed_signals", "malformed public signals");
   if (typeof params.expectedDomain !== "string" || !params.expectedDomain) {
-    return { ok: false, reason: "expected domain is required" };
+    return fail("invalid_expectation", "expected domain is required");
   }
 
   // 1. The proof is bound to YOUR domain, or it is someone else's login.
   if (signals.domain_hash !== domainHash(params.expectedDomain)) {
-    return { ok: false, reason: "proof bound to a different domain" };
+    return fail("wrong_domain", "proof bound to a different domain");
   }
 
   // 2. Claim expectations.
   const want = params.expect?.holdsAtLeast;
   if (want) {
     if (typeof want.threshold !== "bigint" || want.threshold < 0n || want.threshold > MAX_U64) {
-      return { ok: false, reason: "expected threshold must be a u64 bigint" };
+      return fail("invalid_expectation", "expected threshold must be a u64 bigint");
     }
     // Census leaves are never removed and the prover picks min_slot, so a
     // gate with no freshness bound accepts a past peak or a briefly
     // borrowed balance forever. 0n is the explicit way to accept any age.
     if (params.expect?.minSlot === undefined) {
-      return { ok: false, reason: "holdings claim needs a freshness bound: set expect.minSlot (0n accepts snapshots of any age)" };
+      return fail("invalid_expectation", "holdings claim needs a freshness bound: set expect.minSlot (0n accepts snapshots of any age)");
     }
-    if (signals.claim_holdings !== 1n) return { ok: false, reason: "holdings claim missing" };
-    const hi = parseField(want.mintHi);
-    const lo = parseField(want.mintLo);
-    if (hi === null || lo === null) return { ok: false, reason: "malformed expected mint" };
+    if (signals.claim_holdings !== 1n) return fail("claim_missing", "holdings claim missing");
+    let fields: { mintHi: string; mintLo: string };
+    try { fields = "mint" in want ? claimMintFields(want.mint) : want; } catch { return fail("invalid_expectation", "malformed expected mint"); }
+    const hi = parseField(fields.mintHi);
+    const lo = parseField(fields.mintLo);
+    if (hi === null || lo === null) return fail("invalid_expectation", "malformed expected mint");
     if (signals.mint_hi !== hi || signals.mint_lo !== lo) {
-      return { ok: false, reason: "claim is for a different mint" };
+      return fail("wrong_mint", "claim is for a different mint");
     }
     if (signals.threshold < want.threshold) {
-      return { ok: false, reason: "threshold below requirement" };
+      return fail("threshold_too_low", "threshold below requirement");
     }
   }
   if (params.expect?.minSlot !== undefined) {
     if (typeof params.expect.minSlot !== "bigint" || params.expect.minSlot < 0n || params.expect.minSlot > MAX_U64) {
-      return { ok: false, reason: "expected minSlot must be a u64 bigint" };
+      return fail("invalid_expectation", "expected minSlot must be a u64 bigint");
     }
     // The circuit only enforces slot >= min_slot when the claim is on;
     // without it min_slot is whatever the prover typed.
     if (signals.claim_holdings !== 1n) {
-      return { ok: false, reason: "minSlot is meaningless without a holdings claim" };
+      return fail("claim_missing", "minSlot is meaningless without a holdings claim");
     }
     if (signals.min_slot < params.expect.minSlot) {
-      return { ok: false, reason: "snapshot window too old" };
+      return fail("snapshot_too_old", "snapshot window too old");
     }
   }
 
@@ -214,26 +247,26 @@ async function verifyLoginChecked(params: VerifyLoginParams): Promise<VerifyLogi
   const session = params.expect?.session;
   if (session) {
     if (!(session.key32 instanceof Uint8Array) || session.key32.length !== 32) {
-      return { ok: false, reason: "session key32 must be 32 bytes" };
+      return fail("invalid_expectation", "session key32 must be 32 bytes");
     }
     const max = session.maxSessionSlots ?? DEFAULT_MAX_SESSION_SLOTS;
     if (![session.expirySlot, session.currentSlot, max].every((v) => typeof v === "bigint" && v >= 0n && v <= MAX_U64)) {
-      return { ok: false, reason: "session slots must be u64 bigints" };
+      return fail("invalid_expectation", "session slots must be u64 bigints");
     }
     if (signals.session_commitment !== sessionCommitment(session.key32, session.expirySlot)) {
-      return { ok: false, reason: "proof bound to a different session key or expiry" };
+      return fail("wrong_session", "proof bound to a different session key or expiry");
     }
-    if (session.expirySlot <= session.currentSlot) return { ok: false, reason: "session expired" };
+    if (session.expirySlot <= session.currentSlot) return fail("session_expired", "session expired");
     if (session.expirySlot > session.currentSlot + max) {
-      return { ok: false, reason: "session expiry too far ahead" };
+      return fail("session_too_long", "session expiry too far ahead");
     }
   }
   if (params.expect?.home) {
     if (!(params.expect.home instanceof Uint8Array) || params.expect.home.length !== 32) {
-      return { ok: false, reason: "home must be 32 bytes" };
+      return fail("invalid_expectation", "home must be 32 bytes");
     }
     if (signals.home_hash !== homeHash(params.expect.home)) {
-      return { ok: false, reason: "proof bound to a different home address" };
+      return fail("wrong_home", "proof bound to a different home address");
     }
   }
 
@@ -243,30 +276,30 @@ async function verifyLoginChecked(params: VerifyLoginParams): Promise<VerifyLogi
   const expectedContext = pocket
     ? pocketAuthorizationContext(pocket.policy, pocket.sessionKind, pocket.deployment, pocket.authorizationEpoch ?? 0n) : 0n;
   if (signals.authorization_context !== expectedContext) {
-    return { ok: false, reason: "proof bound to a different authorization purpose, policy, deployment or revocation epoch" };
+    return fail("wrong_authorization", "proof bound to a different authorization purpose, policy, deployment or revocation epoch");
   }
 
   // 4. Roots must be known recent roots (stale-root control).
   const source = params.roots ?? params.indexer;
   if (!source) {
     if (!params.allowUnverifiedRoots) {
-      return { ok: false, reason: "no root source configured (roots: indexer URL or function)" };
+      return fail("server_configuration", "no root source configured (roots: indexer URL or function)");
     }
   } else {
     let roots: { registry: string[]; census: string[] };
     try {
       roots = typeof source === "function" ? await source() : await fetchRoots(source, params.fetchFn ?? fetch);
     } catch (e) {
-      return { ok: false, reason: `root source unavailable: ${e instanceof Error ? e.message : String(e)}` };
+      return fail("roots_unavailable", `root source unavailable: ${e instanceof Error ? e.message : String(e)}`);
     }
     if (!Array.isArray(roots?.registry) || !Array.isArray(roots?.census)) {
-      return { ok: false, reason: "root source returned an unexpected shape" };
+      return fail("roots_unavailable", "root source returned an unexpected shape");
     }
     if (!roots.registry.some((r) => parseField(r) === signals.registry_root)) {
-      return { ok: false, reason: "unknown registry root" };
+      return fail("unknown_root", "unknown registry root");
     }
     if (signals.claim_holdings === 1n && !roots.census.some((r) => parseField(r) === signals.census_root)) {
-      return { ok: false, reason: "unknown census root" };
+      return fail("unknown_root", "unknown census root");
     }
   }
 
@@ -279,10 +312,8 @@ async function verifyLoginChecked(params: VerifyLoginParams): Promise<VerifyLogi
     vk = undefined;
   }
   if (typeof vk !== "object" || vk === null) {
-    return {
-      ok: false,
-      reason: "login verifying key unavailable (server configuration): pass verificationKey as a parsed key object, or reinstall @ghostlink/verify",
-    };
+    return fail("server_configuration",
+      "login verifying key unavailable (server configuration): pass verificationKey as a parsed key object, or reinstall @ghostlink/verify");
   }
   const wasm = (globalThis as { WebAssembly?: { CompileError: new () => Error } }).WebAssembly;
   if (typeof wasm !== "object") return verifierUnavailable("this runtime has no WebAssembly");
@@ -302,9 +333,9 @@ async function verifyLoginChecked(params: VerifyLoginParams): Promise<VerifyLogi
     if (e instanceof wasm.CompileError || e instanceof EvalError) {
       return verifierUnavailable(errorMessage(e));
     }
-    return { ok: false, reason: "proof is malformed" };
+    return fail("malformed_proof", "proof is malformed");
   }
-  if (!valid) return { ok: false, reason: "proof failed verification" };
+  if (!valid) return fail("invalid_proof", "proof failed verification");
 
   return { ok: true, appId: signals.app_id.toString() };
 }
@@ -380,10 +411,8 @@ function loadGroth16(): Promise<Groth16> {
 const errorMessage = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 function verifierUnavailable(detail: string): VerifyLoginResult {
-  return {
-    ok: false,
-    reason: `proof verifier unavailable on this runtime (server configuration): ${detail}. Run verifyLogin in a Node.js runtime`,
-  };
+  return fail("server_configuration",
+    `proof verifier unavailable on this runtime (server configuration): ${detail}. Run verifyLogin in a Node.js runtime`);
 }
 
 async function fetchRoots(
