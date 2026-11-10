@@ -408,6 +408,32 @@ async function readFactor(): Promise<Uint8Array> {
 
 The `ghostlink:signIn` output contains byte arrays and a `bigint` expiry, so `JSON.stringify` throws on it. Send `signInOutputToDto(output)` (hex bytes, decimal expiry) to your backend. There, decode it, verify the proof with `@ghostlink/verify`, and verify the challenge signature over `loginChallengeDigest(challenge)` before consuming the challenge.
 
+## Sign in through an identity app
+
+A site that does not hold the identity (almost every site) signs users in through the deployment's identity app instead of `client.prove`: `requestLogin` opens the identity app in a popup, the user approves there, and the site receives a login proof bound to its own origin and to a session key it generated. The identity secret, the wallet's signatures and the witnesses never reach the site. The protocol, its origin rules and its limits are in [IDENTITY-HANDOFF.md](../../docs/IDENTITY-HANDOFF.md); [`examples/identity-app`](../../examples/identity-app) and [`examples/nextjs-login`](../../examples/nextjs-login) are complete reference apps.
+
+```ts
+import { requestLogin, parseHandoffSignIn } from "@ghostlink/sdk";
+
+// In a click handler: the popup opens before anything awaits, so pop-up blockers allow it.
+async function signInWithIdentityApp(nonceFromBackend: () => Promise<Uint8Array>) {
+  const approved = await requestLogin({
+    identityOrigin: "https://id.example.com", // the identity app's exact origin, never this site's
+    claim: { mint: "So11111111111111111111111111111111111111112", threshold: 1_000_000_000n, maxAgeSlots: 9_000n }, // optional
+  });
+  // approved.appId is the user's ID for this site; the backend learns it from verifyLogin.
+  return approved.signChallenge(await nonceFromBackend()); // JSON-safe: { proof, publicSignals, key32Hex, expirySlot, signatureHex }
+}
+
+// Backend: decode the body your sign-in route received, then verifyLogin and verifyLoginChallenge as in step 5.
+declare const handoffRequestBody: unknown;
+const decodedSignIn = parseHandoffSignIn(handoffRequestBody); // { proof, publicSignals, key32, expirySlot, signature } or null
+```
+
+- `requestLogin` rejects with a `HandoffError` whose `code` is `popup_blocked`, `closed`, `refused`, `failed` (with the identity app's `identityCode`), `timeout`, `aborted`, `unsupported_version`, `invalid_response` or `invalid_request`. It accepts messages only from the popup it opened, at `identityOrigin`, about its own random request ID, and checks that the answer is a login for this page's origin and session key making exactly the requested claim.
+- The session key is a fresh in-memory Ed25519 `softwareSession()` unless you pass `session`. Only its public key is sent.
+- An identity app answers with `listenForHandoffRequest`, which takes the requesting origin only from the browser, and proves with `client.forOrigin(request.origin).authorizeLogin({ identity, witness, session: request.session, expirySlot, claim })`. `forOrigin` gives a client whose proofs, pockets and owner actions are for another origin; it adds no power (the pure helpers accept any origin) and belongs only in the identity app.
+
 ## Validate a deposit before wallet signing
 
 `client.verifyFunding` checks GET metadata only. An Actions endpoint can return different transaction instructions in its POST response. Use `prepareFundingTransaction` with the user's independently approved app ID, funding wallet, asset and amount. Never extract those approvals from the returned transaction or its display message.
@@ -450,7 +476,7 @@ Trade submission returns explicit states. Inspect `tx.state`; `pending`, `prepar
 - Passkey sessions require user interaction. Backend automation uses Ed25519 sessions under the existing limits.
 - Nonce persistence, quote construction, DEX routing, transaction landing and confirmation reconciliation are integrator/service responsibilities.
 - The SDK does not expose arbitrary wallet transaction signing or unrestricted withdrawals. A pocket is a program account, not an ordinary keypair wallet.
-- This API supplies the proof/key boundary; it does **not** supply the hosted handoff, consent UI, Telegram authentication, or isolated origin-enforcing identity broker.
+- This API supplies the proof/key boundary and a reference cross-origin [identity handoff](../../docs/IDENTITY-HANDOFF.md) with an example identity app; it does **not** supply a hosted identity app, Telegram authentication, or protection against a malicious identity app or a lookalike popup.
 
 See the repository's `docs/INTEGRATIONS.md` and `docs/MAINNET-READINESS.md` for the supported boundaries and release gates.
 

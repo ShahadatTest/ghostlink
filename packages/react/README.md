@@ -39,6 +39,30 @@ function Status() {
 }
 ```
 
+## Sign in through an identity app
+
+Most sites do not hold the user's identity: they ask the deployment's identity app for a login, in a popup ([identity handoff](../../docs/IDENTITY-HANDOFF.md)). In that mode the button needs no provider and no prover:
+
+```tsx
+import { ContinueWithGhostLink } from "@ghostlink/react";
+import { hexToBytes } from "@ghostlink/common";
+
+export function SignIn() {
+  return (
+    <ContinueWithGhostLink
+      identityOrigin="https://id.example.com"
+      onSignIn={async (login) => {
+        // Your backend: a single-use nonce, then verifyLogin + verifyLoginChallenge on what signChallenge returns.
+        const { challengeId, nonce } = await (await fetch("/api/nonce", { method: "POST" })).json();
+        await fetch("/api/verify", { method: "POST", body: JSON.stringify({ challengeId, ...await login.signChallenge(hexToBytes(nonce)) }) });
+      }}
+    />
+  );
+}
+```
+
+The button opens the popup inside the click, so pop-up blockers allow it, and shows "Waiting for approval…" until the user answers. A blocked popup, a closed window, a refusal, a failure in the identity app and any error from `onSignIn` appear below the button. It also takes `claim`, `sessionSlots`, `path` and `timeoutMs`, passed to `requestLogin` from `@ghostlink/sdk`. [`examples/nextjs-login`](../../examples/nextjs-login) is a complete site.
+
 ## API
 
 `<GhostLinkProvider config={...}>` creates the client from `config` on first use. It reads `config` once: to change it, remount the provider with a new React `key`.
@@ -51,11 +75,11 @@ function Status() {
 - `status`: `"idle"`, `"initializing"`, `"proving"`, `"ready"`, or `"error"` when the client failed to initialize (the next call retries).
 - `session`, `setSession` and `error`.
 
-`<ContinueWithGhostLink onLogin={flow} label? busyLabel? className? />` calls `login(onLogin)`, shows `busyLabel` (default "Proving…") while it runs, and shows any failure below itself.
+`<ContinueWithGhostLink onLogin={flow} label? busyLabel? className? style? />` calls `login(onLogin)`, shows `busyLabel` (default "Proving…") while it runs, and shows any failure below itself. With `identityOrigin` and `onSignIn` instead of `onLogin` it runs the identity handoff (above) and needs no provider.
 
 While a login runs the button has `aria-busy="true"` and `aria-disabled="true"`, and presses are ignored, so a second click never starts another login. It does not use the `disabled` attribute, so keyboard focus stays on the button; style the busy state with `[aria-disabled="true"]` instead of `:disabled`.
 
-`useGhostLink()` and the button throw when rendered outside a `GhostLinkProvider`.
+`useGhostLink()`, and the button with `onLogin`, throw when rendered outside a `GhostLinkProvider`.
 
 The session, including its signing key, lives only in React state. Do not persist it.
 
