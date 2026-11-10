@@ -10,6 +10,10 @@
  *       checks it against this checkout's verifying keys and program sources.
  *   node scripts/deployment.mjs ids [<manifest.json>]
  *       Prints "registry census pocket" program IDs.
+ *   node scripts/deployment.mjs manifest [<manifest.json>]
+ *       Prints a manifest in canonical form; without an argument, the
+ *       built-in localnet deployment (for a local validator running the
+ *       default program build).
  *   node scripts/deployment.mjs artifacts <manifest.json>
  *       Prints the directory holding the programs built for the manifest,
  *       after checking they were built for exactly that manifest.
@@ -17,6 +21,12 @@
  *       Everything scripts/deploy-programs.sh checks before deploying.
  *   node scripts/deployment.mjs initialize <manifest.json> --url <rpc> --payer <keypair.json>
  *       Creates the registry and census trees if they do not exist yet.
+ *   node scripts/deployment.mjs fee show <manifest.json> --url <rpc>
+ *   node scripts/deployment.mjs fee set <manifest.json> <lamports> --url <rpc> --authority <keypair.json> [--confirm <cluster>]
+ *   node scripts/deployment.mjs fee withdraw <manifest.json> <lamports|all> --to <address> --url <rpc> --authority <keypair.json> [--confirm <cluster>]
+ *       Shows, sets or withdraws the census snapshot fee (ADR 0005). Only the
+ *       census program's upgrade authority can set or withdraw; its keypair
+ *       must be outside this checkout. Public clusters need --confirm <cluster>.
  *
  * Used by scripts/build-programs.sh (prepare-build, stamp) and
  * scripts/localnet-e2e.sh. Requires a built @ghostlink/common.
@@ -183,6 +193,12 @@ function cmdIds(args) {
   console.log(ROLES.map(role => manifest[role]).join(" "));
 }
 
+function cmdManifest(args) {
+  const { positional } = options(args, []);
+  if (positional.length > 1) fail("usage: manifest [<manifest.json>]");
+  process.stdout.write(canonical(loadManifest(positional[0])));
+}
+
 function cmdCluster(args) {
   const { positional } = options(args, []);
   if (positional.length !== 1) fail("usage: cluster <manifest.json>");
@@ -301,12 +317,10 @@ async function cmdDeployCheck(args) {
   for (const role of ROLES) console.log(`${NAMES[role]} ${manifest[role]}`);
 }
 
-async function cmdInitialize(args) {
-  const { positional, named } = options(args, ["url", "payer"]);
-  if (positional.length !== 1 || !named.url || !named.payer) fail("usage: initialize <manifest.json> --url <rpc> --payer <keypair.json>");
-  const manifest = loadManifest(positional[0]);
+/** web3.js and @ghostlink/service-kit loaded for the manifest, and a connection checked against its genesis. */
+async function chainFor(manifestPath, manifest, url) {
   // service-kit reads the deployment once, at import.
-  process.env.GHOSTLINK_DEPLOYMENT = resolve(positional[0]);
+  process.env.GHOSTLINK_DEPLOYMENT = resolve(manifestPath);
   const require = createRequire(join(ROOT, "services/shared/package.json"));
   const web3 = require("@solana/web3.js");
   let kit;
@@ -314,10 +328,25 @@ async function cmdInitialize(args) {
     fail("build @ghostlink/service-kit first: pnpm --filter @ghostlink/service-kit... build");
   }
   if (kit.POCKET.toBase58() !== manifest.pocketProgram) fail("service-kit did not load the manifest");
-  const connection = new web3.Connection(named.url, "confirmed");
-  try { common.assertDeploymentGenesis(manifest, await connection.getGenesisHash()); } catch (error) { fail(error.message); }
-  readKeypair(named.payer);
-  const payer = web3.Keypair.fromSecretKey(Uint8Array.from(JSON.parse(readFileSync(named.payer, "utf8"))));
+  const connection = new web3.Connection(url, "confirmed");
+  let genesis;
+  try { genesis = await connection.getGenesisHash(); } catch { fail(`cannot reach ${url}`); }
+  try { common.assertDeploymentGenesis(manifest, genesis); } catch (error) { fail(error.message); }
+  return { web3, kit, connection };
+}
+
+/** A keypair file as a web3.js Keypair, after the same checks as readKeypair. */
+function signer(web3, path) {
+  readKeypair(path);
+  return web3.Keypair.fromSecretKey(Uint8Array.from(JSON.parse(readFileSync(path, "utf8"))));
+}
+
+async function cmdInitialize(args) {
+  const { positional, named } = options(args, ["url", "payer"]);
+  if (positional.length !== 1 || !named.url || !named.payer) fail("usage: initialize <manifest.json> --url <rpc> --payer <keypair.json>");
+  const manifest = loadManifest(positional[0]);
+  const { web3, kit, connection } = await chainFor(positional[0], manifest, named.url);
+  const payer = signer(web3, named.payer);
   for (const [program, tree] of [["registry", kit.registryTreePda()], ["census", kit.censusTreePda()]]) {
     if (await connection.getAccountInfo(tree, "confirmed")) { console.log(`${program} tree already exists: ${tree.toBase58()}`); continue; }
     const transaction = new web3.Transaction().add(kit.initializeIx(program, payer.publicKey));
@@ -326,8 +355,99 @@ async function cmdInitialize(args) {
   }
 }
 
+// ---- census snapshot fee (ADR 0005) -----------------------------------------
+
+const FEE_USAGE = "usage: fee show <manifest.json> --url <rpc>\n" +
+  "       fee set <manifest.json> <lamports> --url <rpc> --authority <keypair.json> [--confirm <cluster>]\n" +
+  "       fee withdraw <manifest.json> <lamports|all> --to <address> --url <rpc> --authority <keypair.json> [--confirm <cluster>]";
+// Relayers refuse snapshot fees above RELAYER_MAX_SNAPSHOT_FEE_LAMPORTS, 1,000,000 by default.
+const RELAYER_DEFAULT_MAX_FEE = 1_000_000n;
+
+/** The census upgrade authority (base58, or null when the program is immutable) from its ProgramData account. */
+async function censusAuthority(connection, kit) {
+  const info = await connection.getAccountInfo(kit.censusProgramDataPda(), "confirmed");
+  const data = info?.data;
+  // UpgradeableLoaderState::ProgramData: u32 tag 3, u64 slot, Option<Pubkey> authority.
+  if (!data || data.length < 45 || data.readUInt32LE(0) !== 3) {
+    fail(`no upgradeable census program at ${kit.CENSUS.toBase58()}; the fee answers to its upgrade authority, so deploy it with solana program deploy`);
+  }
+  return data[12] === 1 ? common.toBase58(data.subarray(13, 45)) : null;
+}
+
+async function feeState(connection, kit) {
+  const [config, vault] = await Promise.all([kit.censusConfigPda(), kit.censusFeeVaultPda()]
+    .map(address => connection.getAccountInfo(address, "confirmed")));
+  if (!config || !vault) fail("the census tree is not initialized; run scripts/deployment.mjs initialize first");
+  let fee;
+  try { fee = kit.readCensusFee(config); } catch { fail("the census config account is not this deployment's"); }
+  const rent = BigInt(await connection.getMinimumBalanceForRentExemption(vault.data.length, "confirmed"));
+  const balance = BigInt(vault.lamports);
+  return { fee, balance, withdrawable: balance > rent ? balance - rent : 0n, authority: await censusAuthority(connection, kit) };
+}
+
+function printFeeState(manifest, kit, state) {
+  console.log(`census     ${kit.CENSUS.toBase58()} (${manifest.cluster})`);
+  console.log(`fee        ${state.fee} lamports per snapshot`);
+  console.log(`vault      ${kit.censusFeeVaultPda().toBase58()}: ${state.balance} lamports, ${state.withdrawable} withdrawable above rent`);
+  console.log(`authority  ${state.authority ?? "none (immutable program: the fee is frozen and the vault locked)"}`);
+}
+
+function lamportsArgument(value) {
+  if (!/^(0|[1-9][0-9]{0,18})$/.test(value) || BigInt(value) > 0xffffffffffffffffn) fail(`${value} is not a whole number of lamports`);
+  return BigInt(value);
+}
+
+async function cmdFee(args) {
+  const [action, ...rest] = args;
+  if (!["show", "set", "withdraw"].includes(action)) fail(FEE_USAGE);
+  const { positional, named } = options(rest, ["url", "authority", "to", "confirm"]);
+  if (positional.length !== (action === "show" ? 1 : 2) || !named.url) fail(FEE_USAGE);
+  if (action === "show" ? named.authority || named.to || named.confirm : !named.authority) fail(FEE_USAGE);
+  if ((action === "withdraw") !== Boolean(named.to)) fail(FEE_USAGE);
+  const manifest = loadManifest(positional[0]);
+  // Check every argument before touching the network.
+  const authorityPath = action === "show" ? undefined : outsideCheckout(named.authority, "the upgrade authority keypair");
+  if (authorityPath) readKeypair(authorityPath);
+  const amount = action === "set" ? lamportsArgument(positional[1]) : action === "withdraw" && positional[1] !== "all" ? lamportsArgument(positional[1]) : undefined;
+  if (named.confirm !== undefined && named.confirm !== manifest.cluster) fail(`--confirm ${named.confirm} does not match the manifest's cluster ${manifest.cluster}`);
+  const { web3, kit, connection } = await chainFor(positional[0], manifest, named.url);
+  const before = await feeState(connection, kit);
+  printFeeState(manifest, kit, before);
+  if (action === "show") return;
+
+  const authority = signer(web3, authorityPath);
+  if (before.authority === null) fail("the census program is immutable: its fee can no longer change and its vault is locked");
+  if (authority.publicKey.toBase58() !== before.authority) fail(`${authorityPath} is ${authority.publicKey.toBase58()}, not the census upgrade authority ${before.authority}`);
+  let instruction, plan;
+  if (action === "set") {
+    if (amount === before.fee) { console.log(`The fee is already ${amount} lamports; nothing to send.`); return; }
+    instruction = kit.setSnapshotFeeIx(authority.publicKey, amount);
+    plan = `set the census snapshot fee from ${before.fee} to ${amount} lamports`;
+    if (amount === 0n) console.log("Note: a zero fee removes the spam cost of census snapshots: anyone can then grow the census tree for network fees alone (docs/adr/0005-census-spam-resistance.md).");
+    if (amount > RELAYER_DEFAULT_MAX_FEE) console.log(`Note: relayers refuse fees above RELAYER_MAX_SNAPSHOT_FEE_LAMPORTS (default ${RELAYER_DEFAULT_MAX_FEE}); raise it on yours.`);
+  } else {
+    let recipient;
+    try { recipient = new web3.PublicKey(named.to); } catch { fail(`--to ${named.to} is not a base58 address`); }
+    if (recipient.equals(kit.censusFeeVaultPda())) fail("--to must not be the fee vault itself");
+    const lamports = amount ?? before.withdrawable;
+    if (lamports === 0n) fail("nothing to withdraw: the vault holds only its rent-exempt minimum");
+    if (lamports > before.withdrawable) fail(`only ${before.withdrawable} lamports are withdrawable above the vault's rent-exempt minimum`);
+    instruction = kit.withdrawSnapshotFeesIx(authority.publicKey, recipient, lamports);
+    plan = `withdraw ${lamports} lamports of census fees to ${recipient.toBase58()}`;
+  }
+  console.log(`Plan: ${plan}, signed by ${authority.publicKey.toBase58()}.`);
+  if (manifest.cluster !== "localnet" && named.confirm !== manifest.cluster) {
+    console.error(`This sends a transaction on ${manifest.cluster}. Review the plan above, then re-run with --confirm ${manifest.cluster}.`);
+    process.exit(1);
+  }
+  const transaction = new web3.Transaction().add(instruction);
+  const signature = await web3.sendAndConfirmTransaction(connection, transaction, [authority], { commitment: "confirmed" });
+  console.log(`Sent: ${signature}`);
+  printFeeState(manifest, kit, await feeState(connection, kit));
+}
+
 const [command, ...rest] = process.argv.slice(2);
-const commands = { new: cmdNew, check: cmdCheck, ids: cmdIds, cluster: cmdCluster, "prepare-build": cmdPrepareBuild,
-  stamp: cmdStamp, artifacts: cmdArtifacts, "deploy-check": cmdDeployCheck, initialize: cmdInitialize };
+const commands = { new: cmdNew, check: cmdCheck, ids: cmdIds, manifest: cmdManifest, cluster: cmdCluster, "prepare-build": cmdPrepareBuild,
+  stamp: cmdStamp, artifacts: cmdArtifacts, "deploy-check": cmdDeployCheck, initialize: cmdInitialize, fee: cmdFee };
 if (!commands[command]) fail(`usage: node scripts/deployment.mjs <${Object.keys(commands).join("|")}> ...`);
 await commands[command](rest);
