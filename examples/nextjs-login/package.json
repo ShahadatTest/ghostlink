@@ -1,0 +1,35 @@
+{
+  "name": "@ghostlink/example-nextjs-login",
+  "version": "0.0.0",
+  "private": true,
+  "description": "A minimal Next.js site with Continue with GhostLink: a nonce route, a verification route and a signed-in page.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "dev": "next dev --port 3000",
+    "build": "next build",
+    "start": "next start --port 3000",
+    "typecheck": "next typegen && tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "e2e": "tsx scripts/handoff-e2e.ts"
+  },
+  "dependencies": {
+    "@ghostlink/common": "workspace:*",
+    "@ghostlink/react": "workspace:*",
+    "@ghostlink/sdk": "workspace:*",
+    "@ghostlink/verify": "workspace:*",
+    "next": "16.4.6",
+    "react": "19.3.1",
+    "react-dom": "19.3.1"
+  },
+  "devDependencies": {
+    "@ghostlink/prover-wasm": "workspace:*",
+    "@noble/curves": "^1.7.0",
+    "@types/node": "^22",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "vitest": "^4.1.12"
+  }
+}
