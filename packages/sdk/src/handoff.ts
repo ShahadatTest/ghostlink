@@ -474,7 +474,7 @@ function start(options: RequestLoginOptions): Promise<HandoffLogin> {
   const key32 = sessionPublicKey(SESSION_KIND_ED25519, session.key32).key32;
   const timeoutMs = options.timeoutMs ?? HANDOFF_DEFAULT_TIMEOUT_MS;
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new HandoffError("invalid_request", "timeoutMs must be positive");
-  if (options.signal?.aborted) throw new HandoffError("aborted", "the login request was cancelled");
+  if (options.signal?.aborted) throw new HandoffError("aborted", "The sign-in was cancelled.");
 
   const id = randomHex32();
   const message: HandoffRequestMessage = {
@@ -485,7 +485,7 @@ function start(options: RequestLoginOptions): Promise<HandoffLogin> {
   // Synchronous on purpose: a popup opened after an await is no longer a user gesture.
   const opened = host.open(url.href, `ghostlink-handoff-${id.slice(0, 16)}`, popupFeatures(host));
   if (!opened) {
-    throw new HandoffError("popup_blocked", "the browser blocked the sign-in window; allow pop-ups for this site and try again");
+    throw new HandoffError("popup_blocked", "The browser blocked the sign-in window. Allow pop-ups for this site and try again.");
   }
   const popup: HandoffPopup = opened;
 
@@ -504,7 +504,7 @@ function start(options: RequestLoginOptions): Promise<HandoffLogin> {
       try { if (!popup.closed) popup.close(); } catch { /* a cross-origin close can be refused; nothing to do */ }
       if ("login" in outcome) resolve(outcome.login); else reject(outcome.error);
     };
-    const onAbort = () => finish({ error: new HandoffError("aborted", "the login request was cancelled") });
+    const onAbort = () => finish({ error: new HandoffError("aborted", "The sign-in was cancelled.") });
 
     function onMessage(event: HandoffMessageEvent) {
       if (settled) return;
@@ -514,7 +514,7 @@ function start(options: RequestLoginOptions): Promise<HandoffLogin> {
       if (!data) return;
       if (data.type === "ready") {
         if (data.version !== HANDOFF_VERSION) {
-          finish({ error: new HandoffError("unsupported_version", `the identity app speaks handoff version ${String(data.version)}, not ${HANDOFF_VERSION}`) });
+          finish({ error: new HandoffError("unsupported_version", `The identity app speaks handoff version ${String(data.version)}, not ${HANDOFF_VERSION}.`) });
           return;
         }
         // A reload of the popup announces itself again; resend the same request a bounded number of times.
@@ -526,14 +526,14 @@ function start(options: RequestLoginOptions): Promise<HandoffLogin> {
       // Answers count only for this request, after it was sent, in this version.
       if (sent === 0 || data.id !== id || data.version !== HANDOFF_VERSION) return;
       if (data.type === "login-refused") {
-        finish({ error: new HandoffError("refused", "you declined the sign-in request") });
+        finish({ error: new HandoffError("refused", "You declined the sign-in request.") });
       } else if (data.type === "login-error") {
         if (typeof data.code !== "string" || !/^[a-z_]{1,40}$/.test(data.code) || typeof data.message !== "string") return;
-        finish({ error: new HandoffError("failed", data.message.slice(0, 300) || "the identity app could not sign you in", data.code) });
+        finish({ error: new HandoffError("failed", data.message.slice(0, 300) || "The identity app could not sign you in.", data.code) });
       } else if (data.type === "login-result") {
         const checked = checkResult(data.result, { origin, key32, claim: want });
         if (!checked.ok) {
-          finish({ error: new HandoffError("invalid_response", `the identity app answered with an unusable proof: ${checked.reason}`) });
+          finish({ error: new HandoffError("invalid_response", `The identity app answered with an unusable proof: ${checked.reason}.`) });
           return;
         }
         const { proof, publicSignals, expirySlot, claim } = checked;
@@ -550,13 +550,13 @@ function start(options: RequestLoginOptions): Promise<HandoffLogin> {
 
     host.addEventListener("message", onMessage);
     options.signal?.addEventListener("abort", onAbort, { once: true });
-    timers.push(setTimeout(() => finish({ error: new HandoffError("timeout", "the sign-in window did not answer in time") }), timeoutMs));
+    timers.push(setTimeout(() => finish({ error: new HandoffError("timeout", "The sign-in window did not answer in time.") }), timeoutMs));
     poll = setInterval(() => {
       if (settled || !popup.closed) return;
       if (poll !== undefined) clearInterval(poll);
       poll = undefined;
       // An answer posted just before the window closed is still queued; let it arrive first.
-      timers.push(setTimeout(() => finish({ error: new HandoffError("closed", "the sign-in window was closed") }), 300));
+      timers.push(setTimeout(() => finish({ error: new HandoffError("closed", "The sign-in window was closed before you answered.") }), 300));
     }, 400);
   });
 }
