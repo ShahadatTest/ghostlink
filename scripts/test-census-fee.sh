@@ -104,7 +104,7 @@ check ok " 0 withdrawable above rent" fee withdraw "$MANIFEST" all --to "$OTHER"
 [ "$(( $(balance "$OTHER") - before ))" -eq 1000000 ] || { echo "FAILED: the recipient did not gain 1000000 lamports in total" >&2; exit 1; }
 
 echo "== immutable program =="
-solana program set-upgrade-authority "$CENSUS_ID" --final --upgrade-authority "$WORK/authority.json" -u "$URL" >/dev/null
+solana program set-upgrade-authority "$CENSUS_ID" --final --upgrade-authority "$WORK/authority.json" --keypair "$WORK/authority.json" -u "$URL" >/dev/null
 check ok "authority +none \(immutable program" fee show "$MANIFEST" --url "$URL"
 check fail "the census program is immutable" fee set "$MANIFEST" 0 --url "$URL" --authority "$WORK/authority.json"
 
