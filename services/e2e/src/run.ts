@@ -4,16 +4,22 @@
  *
  *   1. initialize both trees
  *   2. register a wallet through the relayer (true secret derivation:
- *      s = SHA-256 of the wallet's deterministic signature)
+ *      s = SHA-256 of the wallet's deterministic signature), and a second
+ *      one with app-submitted SDK instructions
  *   3. census snapshot through the relayer (paying the census fee); the
  *      indexer ingests from RPC and serves both leaves once their
- *      root-history buckets end
+ *      root-history buckets end; the SDK gathers and checks the witness
  *   4. prove login on this machine (snarkjs, dev keys)
  *   5. verify the proof server-side with @ghostlink/verify
  *   6. open the pocket session through the relayer
  *   7. fund the pocket through the Actions (Blink) endpoint
  *   8. fill through the solver (inventory, or cloned Jupiter with the fork fixture)
  *   9. sweep home with an owner proof through the relayer
+ *  10. stage and cancel a policy change with app-submitted owner proofs
+ *
+ * Registration, snapshot, witness, session opening and every owner action
+ * go through @ghostlink/sdk client methods, exactly as an integrator calls
+ * them; this file adds the fixtures and the assertions.
  *
  * Expects a validator prepared by scripts/localnet-e2e.sh. Runs against the
  * deployment named by GHOSTLINK_DEPLOYMENT (the built-in localnet one when
@@ -29,7 +35,7 @@ import {
   PublicKey,
   SystemProgram,
   Transaction,
-  type TransactionInstruction,
+  TransactionInstruction,
 } from "@solana/web3.js";
 import { ed25519 } from "@noble/curves/ed25519";
 import bs58 from "bs58";
@@ -43,34 +49,28 @@ import {
   appId as deriveAppId,
   domainHash as deriveDomainHash,
   fieldToBytes32,
-  hashToField,
   pocketAuthorizationEpoch,
-  proofToBytes,
-  publicSignalsToBytes,
+  policyHash,
   sessionDeployment,
   verifyingKeyDigest,
   type Policy,
-  type SnarkjsProof,
 } from "@ghostlink/common";
 import {
   GhostLink,
   RelayerClient,
   RelayerOperationPendingError,
-  prepareRelayerOperation,
   prepareFundingTransaction,
   type PreparedRelayerOperation,
   ApplicationRegistry,
   applicationRegistryDigest,
   OwnerConsentController,
   policyToDto,
-  buildLoginInput,
-  buildRegistration,
   deriveIdentity,
+  jsonRpcChainReader,
+  ownerActionRequest,
   sessionPublicKey,
-  sweepDigest,
-  revokeDigest,
-  changeDigest,
-  cancelDigest,
+  type GhostLinkInstruction,
+  type OwnerActionKind,
   type Prover,
   type ApplicationManifest,
 } from "@ghostlink/sdk";
@@ -80,6 +80,7 @@ import {
   POCKET,
   REGISTRY,
   ataAddress,
+  bindingPda,
   censusFeeVaultPda,
   createAtaIdempotentIx,
   initializeIx,
@@ -161,6 +162,9 @@ async function main() {
     if (status.value.err) throw new Error(`transaction ${sig} failed: ${JSON.stringify(status.value.err)}`);
     return sig;
   };
+  // SDK instructions are plain bytes; an app converts them with its own Solana client.
+  const web3 = (ixs: GhostLinkInstruction[]) => ixs.map(ix => new TransactionInstruction({ programId: new PublicKey(ix.programId),
+    keys: ix.keys.map(k => ({ ...k, pubkey: new PublicKey(k.pubkey) })), data: Buffer.from(ix.data) }));
 
   // ---- trees ---------------------------------------------------------------
   const treeExists = await connection.getAccountInfo(
@@ -234,20 +238,9 @@ async function main() {
   relayerFixture = await startRelayerFixture(serviceConnection, payer, keepRunning ? demoPortBase + 1 : 0);
   const relayerUrl = relayerFixture.url;
   const relayerClient = new RelayerClient(relayerUrl);
-  const settleRelayer = async (operation: PreparedRelayerOperation) => {
-    let receipt = await relayerClient.submit(operation);
-    const deadline = Date.now() + 60_000;
-    while (!["confirmed", "finalized", "failed"].includes(receipt.state)) {
-      if (Date.now() > deadline) throw new Error(`relayer ${operation.route} did not settle its original request`);
-      await new Promise(resolve => setTimeout(resolve, 500));
-      receipt = await relayerClient.status(operation.requestIdHex);
-      // The original call may have saved a packet but lacked evidence to broadcast it.
-      // Retry only this immutable request after reconciliation permits pending/preparing work.
-      if (receipt.state === "pending" || receipt.state === "preparing") receipt = await relayerClient.submit(operation);
-    }
-    if (receipt.state === "failed") throw new Error(`relayer ${operation.route} failed on-chain`);
-    return receipt;
-  };
+  // SDK relayer calls settle themselves: submit, reconcile, resubmit only the same request, up to a deadline.
+  // A call that outlives its deadline hands back the saved operation, which is finished the same way.
+  const settleRelayer = (operation: PreparedRelayerOperation) => relayerClient.settle(operation, { timeoutMs: 60_000 });
   const settleSession = async (open: () => Promise<unknown>) => {
     try { await open(); }
     catch (error) {
@@ -303,6 +296,8 @@ async function main() {
     actions: actionsUrl,
     prover,
     origin,
+    // Owner actions read the pocket's nonce, home and pending change through plain JSON-RPC.
+    chain: jsonRpcChainReader(RPC),
   });
 
   // ---- registration (true secret derivation) ------------------------------
@@ -314,29 +309,30 @@ async function main() {
     address: wallet.publicKey.toBase58(),
   });
   if (!identity.deterministic) throw new Error("expected deterministic signer");
-  const reg = await buildRegistration(
-    identity,
-    wallet.publicKey.toBytes(),
-    REGISTRY.toBytes(),
-    "devnet",
-    signMessage,
-  );
-  const registrationReceipt = await settleRelayer(prepareRelayerOperation("/register", {
-    walletPubkey: wallet.publicKey.toBase58(), messageHex: bytesToHex(reg.message), signatureHex: bytesToHex(reg.signature),
-    commitmentHex: bytesToHex(fieldToBytes32(identity.commitment)),
-  }));
+  const registrationReceipt = await gl.register({ identity, wallet: wallet.publicKey.toBytes(), signMessage });
   if (serviceRpcFixture) {
     serviceRpcFixture.assertRecovered();
     ok("relayer lost acceptance reply; fallback preserved exact signed bytes and confirmed over HTTP");
   }
   ok("registered through the relayer");
 
+  // An app that pays for and sends its own transactions registers with the same SDK call's instructions.
+  const selfWallet = Keypair.fromSeed(label("e2e self-registered wallet seed"));
+  const selfSign = async (msg: Uint8Array) => ed25519.sign(msg, selfWallet.secretKey.subarray(0, 32));
+  const selfIdentity = await deriveIdentity(selfSign, { cluster: "devnet", domain: new URL(origin).host, address: selfWallet.publicKey.toBase58() });
+  await send(web3(await gl.registerInstructions({ identity: selfIdentity, wallet: selfWallet.publicKey.toBytes(), signMessage: selfSign,
+    payer: payer.publicKey.toBytes() })), []);
+  const selfBinding = await connection.getAccountInfo(bindingPda(selfWallet.publicKey), "confirmed");
+  if (!selfBinding?.owner.equals(REGISTRY) || bytesToHex(selfBinding.data.subarray(16, 48)) !== bytesToHex(fieldToBytes32(selfIdentity.commitment))) {
+    throw new Error("app-submitted registration did not bind the identity commitment");
+  }
+  ok("registered a second wallet with app-submitted SDK instructions (Ed25519 check + register)");
+
   // ---- census snapshot -----------------------------------------------------
-  const holding = ataAddress(wallet.publicKey, inputMint);
   const vaultBefore = BigInt(await connection.getBalance(censusFeeVaultPda(), "confirmed"));
-  const snapshotReceipt = await settleRelayer(prepareRelayerOperation("/snapshot", {
-    wallet: wallet.publicKey.toBase58(), holding: holding.toBase58(),
-  }, bytesToHex(label("initial census snapshot"))));
+  // The holding is the wallet's associated token account of the mint; the SDK derives it.
+  const snapshotReceipt = await gl.snapshot({ wallet: wallet.publicKey.toBytes(), mint: inputMint.toBytes() },
+    { requestIdHex: bytesToHex(label("initial census snapshot")) });
   if (serviceRpcFixture) {
     const before = JSON.stringify([...store.cursors]);
     serviceRpcFixture.outage(true);
@@ -394,24 +390,30 @@ async function main() {
   ok("relayed census snapshot paid the default fee into the fee vault");
 
   // ---- prove login (SDK + indexer witness) ---------------------------------
-  const binding = (await (await fetch(`${indexerUrl}/registry/binding/${wallet.publicKey.toBase58()}`)).json()) as {
-    leafIndex: number;
-  };
-  const census = await gl.latestCensus(wallet.publicKey.toBytes(), inputMint.toBytes());
-  const regLeaf = BigInt(store.registryLeaves[binding.leafIndex]!);
-  const cenLeaf = BigInt(store.censusLeaves[census.leafIndex]!);
-  const regPath = await gl.verifiedPath("registry", binding.leafIndex, regLeaf);
-  const cenPath = await gl.verifiedPath("census", census.leafIndex, cenLeaf);
+  // The SDK reads the binding (checking it is this identity's commitment) and the latest snapshot, and
+  // verifies both paths against their leaves. The indexer keeps polling while it waits, as a live one does.
+  let polling = true;
+  const ticking = (async () => {
+    while (polling) { await poller.tick().catch(() => {}); await new Promise(resolve => setTimeout(resolve, 1_000)); }
+  })();
+  let witness: Awaited<ReturnType<typeof gl.witness>>;
+  try {
+    witness = await gl.witness({ identity, wallet: wallet.publicKey.toBytes(), mint: inputMint.toBytes(), wait: { timeoutMs: 180_000 } });
+  } finally { polling = false; await ticking; }
+  const census = witness.census!;
+  if (BigInt(store.registryLeaves[witness.registry.index]!) === 0n || BigInt(store.censusLeaves[census.index]!) === 0n) {
+    throw new Error("SDK witness points outside the indexed trees");
+  }
+  ok("SDK gathered and verified the registry and census witness from the indexer");
 
-  const currentSlot = BigInt(await connection.getSlot("confirmed"));
+  const currentSlot = await gl.currentSlot();
   const expirySlot = currentSlot + 50_000n;
-  const minSlot = BigInt(census.slot);
+  const minSlot = census.slot;
   const home = wallet.publicKey; // default home: the registering wallet
 
   const claim = {
-    kind: "holdsAtLeast" as const,
     mint: inputMint.toBytes(),
-    amount: 100_000_000n,
+    threshold: 100_000_000n,
     maxAgeSlots: 9_000n,
   };
   const policy: Policy = {
@@ -438,32 +440,8 @@ async function main() {
   let { consent } = consentStatus;
   const session = sessionPublicKey(0, hexToBytes(consent.sessionKeyHex));
   ok("authenticated bot request created; owner received only the public session key");
-  const loginInputFor = (signer: typeof session, expires: bigint) => buildLoginInput({
-    identity,
-    origin,
-    claim,
-    minSlot,
-    session: signer,
-    expirySlot: expires,
-    home: home.toBytes(),
-    policy,
-    witness: {
-      registry: {
-        walletPubkey: wallet.publicKey.toBytes(),
-        index: regPath.index,
-        siblings: regPath.siblings,
-        root: regPath.root,
-      },
-      census: {
-        index: cenPath.index,
-        siblings: cenPath.siblings,
-        root: cenPath.root,
-        amount: BigInt(census.amount),
-        slot: BigInt(census.slot),
-      },
-    },
-  });
-  const { input, appId, domainHash } = loginInputFor(session, expirySlot);
+  const domainHash = deriveDomainHash(origin);
+  const appId = deriveAppId(identity.sField, domainHash);
   const now = Math.floor(Date.now() / 1000);
   let ownerManifest: ApplicationManifest = { version: 1, revision: 1, ownerOrigin: botFixture.ownerOrigin,
     deployment: botFixture.deployment, issuedAt: now, expiresAt: now + 3600, applications: [{
@@ -482,10 +460,7 @@ async function main() {
       return pocketAuthorizationEpoch(account.data);
     } });
   const ownerExpectations = { applicationId: "fixture-bot", telegramUserId: botFixture.userId, identity, home: home.toBytes(), expirySlot };
-  const ownerProofParams = { identity, prover, claim, minSlot, witness: {
-    registry: { walletPubkey: wallet.publicKey.toBytes(), ...regPath },
-    census: { ...cenPath, amount: BigInt(census.amount), slot: BigInt(census.slot) },
-  } };
+  const ownerProofParams = { identity, prover, claim, minSlot, witness };
   const ownerReview = await ownerConsent.review(consentStatus, ownerExpectations);
   const glSession = await ownerConsent.prove(ownerReview, ownerProofParams);
   const loginProof = glSession.proof;
@@ -510,13 +485,9 @@ async function main() {
   const payerBeforeOpen = BigInt(await connection.getBalance(payer.publicKey, "confirmed"));
   const reservedBeforeOpen = relayerFixture.spent();
   if (process.env.WATCHER_DRILL === "1") relayerFixture.refuseNextInitialStatus();
-  await settleSession(() => gl.openSession(
-    glSession,
-    pocketHandle,
-    { mint: inputMint.toBytes(), threshold: claim.amount, minSlot, claim: true },
-    { registry: regPath.root, census: cenPath.root },
-    domainHash,
-  ));
+  const expectedOpening = { claim: { mint: inputMint.toBytes(), threshold: claim.threshold, minSlot },
+    roots: { registry: witness.registry.root, census: census.root }, domainHash };
+  await settleSession(() => gl.openSession(glSession, pocketHandle, expectedOpening));
   if (process.env.WATCHER_DRILL === "1") {
     relayerFixture.assertInitialStatusRefused();
     ok("initial unknown opening receipt reconciled through the same saved request");
@@ -529,6 +500,14 @@ async function main() {
   }
   ok(`pocket creation budget reserved the exact payer debit: ${paidForOpen} lamports`);
   ok(`pocket open at ${pocket.toBase58()}`);
+  // The SDK's dependency-free account decoder must agree with the services' on the fields owner actions bind.
+  const sdkState = await gl.pocketState(pocket.toBytes());
+  const kitState = readPocketAccount((await connection.getAccountInfo(pocket, "confirmed"))!);
+  if (!sdkState || bytesToHex(sdkState.home) !== bytesToHex(kitState.home.toBytes()) || sdkState.ownerActionNonce !== kitState.ownerActionNonce ||
+    sdkState.authorizationEpoch !== kitState.authorizationEpoch || sdkState.sessionExpirySlot !== kitState.sessionExpirySlot ||
+    sdkState.maxSessionExpirySlot !== kitState.maxSessionExpirySlot || bytesToHex(policyHash(sdkState.policy)) !== bytesToHex(policyHash(kitState.policy))) {
+    throw new Error("SDK pocket decoder disagrees with the confirmed account");
+  }
   if ((await botFixture.confirm(consent.id)).state !== "confirmed") throw new Error("bot consent not confirmed");
   await botFixture.restart();
   const recovered = await botFixture.create(request);
@@ -536,20 +515,17 @@ async function main() {
   await botFixture.confirm(consent.id);
   ok("bot permissions confirmed on-chain and encrypted session restored after server restart");
 
-  const ownerBody = async (action: "sweep" | "revoke" | "propose" | "cancel", change?: Uint8Array) => {
-    const account = await connection.getAccountInfo(pocket, "confirmed");
-    if (!account) throw new Error("pocket missing before owner action");
-    const nonce = readPocketAccount(account).ownerActionNonce;
-    if ((action === "propose" || action === "cancel") && !change) throw new Error("fixture change bytes required");
-    const digest = action === "sweep" ? sweepDigest(pocket.toBytes(), nonce) : action === "revoke" ? revokeDigest(pocket.toBytes(), nonce)
-      : action === "propose" ? changeDigest(pocket.toBytes(), change!, nonce) : cancelDigest(pocket.toBytes(), change!, nonce);
-    const ownerInput = { registry_root: regPath.root.toString(), domain_hash: input.domain_hash, app_id: input.app_id,
-      action_hash: hashToField(digest).toString(), s: input.s, pk_hi: input.pk_hi, pk_lo: input.pk_lo, reg_index: input.reg_index, reg_siblings: input.reg_siblings };
-    const proof = await prover.prove("owner", ownerInput as Record<string, string | string[]>);
-    const bytes = proofToBytes(proof.proof as SnarkjsProof);
-    return { pocket: pocket.toBase58(), action, proofAHex: bytesToHex(bytes.a), proofBHex: bytesToHex(bytes.b), proofCHex: bytesToHex(bytes.c),
-      registryRootHex: bytesToHex(fieldToBytes32(regPath.root)), ...(action === "propose" ? { changeHex: bytesToHex(change!) } : {}) };
+  // Owner actions: the SDK reads the pocket's nonce, home and pending change from the chain and proves on this machine.
+  const ownerWitness = { registry: witness.registry };
+  const proveOwner = (action: OwnerActionKind, change?: Uint8Array) => {
+    // The drills hand a staged home change as its Borsh bytes (tag 0, then the key).
+    if (change && (change[0] !== 0 || change.length !== 33)) throw new Error("fixture change must be a home change");
+    return gl.proveOwnerAction({ identity, witness: ownerWitness, action,
+      ...(action === "propose" && change ? { change: { home: change.subarray(1) } } : {}) });
   };
+  // The drills post raw relayer requests to exercise the relayer's own refusals; the SDK builds the exact body.
+  const ownerBody = async (action: OwnerActionKind, change?: Uint8Array) =>
+    ownerActionRequest(await proveOwner(action, change)) as unknown as Record<string, unknown>;
 
   // ---- fund through the Blink ----------------------------------------------
   const appIdHex = bytesToHex(fieldToBytes32(appId));
@@ -602,9 +578,7 @@ async function main() {
   if (forkPlanner) {
     await exerciseJupiterPocket({ connection, pocket, input: inputMint, output: outputMint, payer, wallet, solverKey: solverKp,
       bot: botFixture, solver: solverFixture, consent, planner: forkPlanner, send, revoke: async () => {
-        const response = await fetch(`${relayerUrl}/owner-action`, { method: "POST", headers: { "content-type": "application/json" },
-          body: JSON.stringify(await ownerBody("revoke")) });
-        if (!response.ok) throw new Error(`revoke failed: ${await response.text()}`);
+        await gl.submitOwnerAction(await proveOwner("revoke"));
       } });
   } else {
     // The pocket's output token account is the app's (or funder's) job,
@@ -637,8 +611,7 @@ async function main() {
       ownerRegistry.update(ownerManifest, applicationRegistryDigest(ownerManifest));
       const nextReview = await ownerConsent.review(next, { ...ownerExpectations, expirySlot: nextExpiry });
       const nextSession = await ownerConsent.prove(nextReview, ownerProofParams);
-      await settleSession(() => gl.openSession(nextSession, gl.pocketFor(nextSession, home.toBytes(), policy),
-        { mint: inputMint.toBytes(), threshold: claim.amount, minSlot, claim: true }, { registry: regPath.root, census: cenPath.root }, domainHash));
+      await settleSession(() => gl.openSession(nextSession, gl.pocketFor(nextSession, home.toBytes(), policy), expectedOpening));
       const until = Date.now() + 60_000;
       for (;;) {
         try { if (!(await solverFixture.prepareRecovery(pocket.toBase58())).rotationRequired) break; }
@@ -691,12 +664,10 @@ async function main() {
     expectedHome.set(mint.toBase58(), held + homeHeld);
     if (expectedHomeLamports !== undefined) expectedHomeLamports += BigInt((await connection.getAccountInfo(ataAddress(pocket, mint), "confirmed"))!.lamports);
   }
-  await settleRelayer(prepareRelayerOperation("/owner-action", {
-      ...await ownerBody("sweep"),
-      home: wallet.publicKey.toBase58(),
-      tokenPairs: sweepMints.map(mint => ({ source: ataAddress(pocket, mint).toBase58(),
-        destination: ataAddress(wallet.publicKey, mint).toBase58(), mint: mint.toBase58() })),
-  }));
+  const sweep = await proveOwner("sweep");
+  if (bytesToHex(sweep.home!) !== bytesToHex(wallet.publicKey.toBytes())) throw new Error("SDK read a different recovery home");
+  await gl.submitOwnerAction(sweep, { tokenPairs: sweepMints.map(mint => ({ source: ataAddress(pocket, mint).toBytes(),
+    destination: ataAddress(wallet.publicKey, mint).toBytes(), mint: mint.toBytes() })) });
   for (const mint of sweepMints) {
     const homeBalance = await connection.getTokenAccountBalance(ataAddress(wallet.publicKey, mint));
     if (BigInt(homeBalance.value.amount) !== expectedHome.get(mint.toBase58()) || await connection.getAccountInfo(ataAddress(pocket, mint))) {
@@ -728,6 +699,26 @@ async function main() {
     throw new Error("indexer did not retain actual trade mode/cost and owner recovery history");
   }
   ok("indexer retained actual PocketV3 trade mode/cost and subsequent owner recovery history");
+
+  // ---- policy change with app-submitted owner proofs ------------------------------
+  // The reference relayer submits home changes only, so a policy change goes out as SDK instructions in the app's own transaction.
+  const tighter: Policy = { ...policy, dailyCapUsdE6: policy.dailyCapUsdE6 / 2n };
+  const proposal = await gl.proveOwnerAction({ identity, witness: ownerWitness, action: "propose", change: { policy: tighter } });
+  await send(web3(gl.ownerActionInstructions(proposal, { payer: payer.publicKey.toBytes() })), []);
+  const staged = await gl.pocketState(pocket.toBytes());
+  if (!staged?.pending || !("policy" in staged.pending.change) || bytesToHex(policyHash(staged.pending.change.policy)) !== bytesToHex(policyHash(tighter)) ||
+    staged.pending.executableAfterSlot <= await gl.currentSlot() || staged.ownerActionNonce !== proposal.ownerActionNonce + 1n ||
+    bytesToHex(policyHash(staged.policy)) !== bytesToHex(policyHash(policy))) {
+    throw new Error("proposed policy change was not staged behind the timelock");
+  }
+  const cancellation = await gl.proveOwnerAction({ identity, witness: ownerWitness, action: "cancel" });
+  await send(web3(gl.ownerActionInstructions(cancellation, { payer: payer.publicKey.toBytes() })), []);
+  const unchanged = await gl.pocketState(pocket.toBytes());
+  if (!unchanged || unchanged.pending || unchanged.ownerActionNonce !== proposal.ownerActionNonce + 2n ||
+    bytesToHex(policyHash(unchanged.policy)) !== bytesToHex(policyHash(policy))) {
+    throw new Error("cancelled policy change was not cleared");
+  }
+  ok("app-submitted owner proofs staged a policy change behind the 24-hour timelock and cancelled it");
 
   if (process.env.RECOVERY_DESTINATION_DRILL === "1") {
     const {exerciseRecoveryDestinations}=await import("./recovery-destinations.js");
