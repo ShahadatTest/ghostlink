@@ -79,6 +79,10 @@ On those runtimes `verifyLogin` returns `{ ok: false }` with a reason starting `
 
 The repository's packaging check imports the installed package as an edge runtime would see it (browser and worker export conditions, no Node.js built-ins, WebAssembly compilation refused) and expects exactly this behaviour. It has not been run on Vercel or Cloudflare themselves.
 
+## Licensing of snarkjs
+
+This package is Apache-2.0. It depends on [snarkjs](https://github.com/iden3/snarkjs) and its libraries, such as ffjavascript, which are GPL-3.0. Checking proofs on your own server runs snarkjs there; it does not hand snarkjs to anyone, and GPL-3.0's source-sharing conditions are about distributing ("conveying") the code. If you bundle this package into something you give to others, such as a browser bundle or a desktop app, that bundle contains snarkjs. See [LICENSING.md](../../LICENSING.md). This is a plain-language summary, not legal advice.
+
 ## Security notes
 
 - **A proof is not a password.** Without `expect.session` and a verified challenge, anyone holding a copy of the proof can present it until its roots age out.

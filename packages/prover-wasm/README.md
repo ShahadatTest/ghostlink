@@ -95,6 +95,10 @@ Create the prover in a client component (a file starting with `"use client"`). A
 
 ESM only: `"type": "module"` and an `exports` map with `types`, `import` and `default` conditions for `.` and `./worker`. Use `import`, or `await import()` from CommonJS. TypeScript finds the types with `moduleResolution` set to `NodeNext` or `Bundler`. snarkjs is imported on the first proof, not when the package loads, so importing the package on a server or into a page costs nothing until someone proves. `sideEffects` names only the worker entry, so bundlers can drop anything else that is unused but never `import "@ghostlink/prover-wasm/worker"`.
 
+## Licensing of snarkjs
+
+This package is Apache-2.0. It depends on [snarkjs](https://github.com/iden3/snarkjs) and its libraries, such as ffjavascript, which are GPL-3.0. A browser prover reaches users as JavaScript, so a site that uses this package distributes snarkjs to its visitors, and GPL-3.0's conditions for distributed code apply to that snarkjs code. With `createWorkerProver`, snarkjs is loaded only by the separate worker file, not by your page's own bundle (checked with a Vite 7 build: the page's chunk contains no snarkjs). That keeps the GPL-3.0 code a separable file you can identify and offer source for. Whether that is enough for your product is a legal question. See [LICENSING.md](../../LICENSING.md). This is a plain-language summary, not legal advice.
+
 ## Performance
 
 The login proof took about 2.4 s in desktop Chromium; phones are not yet measured ([benchmarks](../../docs/benchmarks.md)).

@@ -22,10 +22,20 @@ Some dependencies are not Apache-2.0. The ones that matter most:
 
 | Component | License | Where GhostLink uses it |
 | --- | --- | --- |
-| [snarkjs](https://github.com/iden3/snarkjs) and its libraries (ffjavascript, r1csfile, fastfile) | GPL-3.0 | Runtime dependency of `@ghostlink/verify` and `@ghostlink/prover-wasm`; circuit builds and tests |
+| [snarkjs](https://github.com/iden3/snarkjs) and its libraries (ffjavascript, wasmcurves, wasmbuilder, r1csfile, fastfile, @iden3/binfileutils) | GPL-3.0 | Runtime dependency of `@ghostlink/verify` and `@ghostlink/prover-wasm`; circuit builds and tests |
 | [circomlib](https://github.com/iden3/circomlib) | GPL-3.0 | Poseidon, comparator and bit-decomposition templates included by `circuits/*.circom` |
 
-GhostLink's Apache-2.0 grant covers GhostLink's own code and does not relicense these components. If you distribute a bundle that contains them, or circuit artifacts compiled from circomlib templates, check the GPL-3.0 obligations for your distribution. This summary is not legal advice.
+The licences above are the ones the installed packages declare in their own `package.json` and `COPYING` files (snarkjs 0.7.6, ffjavascript 0.3.1). GhostLink's Apache-2.0 grant covers GhostLink's own code and does not relicense these components. If you distribute a bundle that contains them, or circuit artifacts compiled from circomlib templates, check the GPL-3.0 obligations for your distribution.
+
+### What this means for an app that uses the packages
+
+GPL-3.0's source-sharing conditions are about distributing ("conveying") the code to others. In practice:
+
+- **Checking proofs on your own server** (`@ghostlink/verify` in your backend) runs snarkjs there. It does not hand snarkjs to anyone.
+- **Proving in the browser** (`@ghostlink/prover-wasm`) does: a web page's JavaScript is delivered to every visitor, so a site that ships the prover distributes snarkjs, and GPL-3.0's conditions apply to that snarkjs code.
+- **Loading the prover as a separate worker file** (`createWorkerProver`) keeps snarkjs out of your page's own bundle, in a file that only the worker loads. That keeps the GPL-3.0 code a separable, identifiable file for which you can offer the corresponding source. It does not by itself settle what GPL-3.0 asks of your product as a whole.
+
+This summary is not legal advice. If it matters for your product, ask a lawyer.
 
 ## Can we prohibit copying and still call the code open source?
 
