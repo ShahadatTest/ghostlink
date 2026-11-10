@@ -17,6 +17,8 @@ bash scripts/build-programs.sh   # registry, census, pocket and the test-only CP
 bash scripts/test-programs.sh    # vectors, proof cross-checks, LiteSVM flows
 ```
 
+These build and test the committed program IDs, which the fixtures and LiteSVM tests bind. To build registry, census and pocket under your own program IDs, without editing the checkout, use `bash scripts/build-programs.sh --deployment <manifest.json>` ([deployments](../docs/DEPLOYMENTS.md)).
+
 The verifying keys compiled into the programs and the fixture proofs the tests use are committed, so no circuit build is needed. `scripts/build-circuits.sh` regenerates all of them together when a circuit changes.
 
 ## Invariants (tested, not yet independently audited)
