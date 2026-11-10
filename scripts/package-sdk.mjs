@@ -1,9 +1,9 @@
 // Pack only public libraries and test them in a consumer outside the monorepo.
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 
@@ -27,7 +27,8 @@ for (const relative of folders) {
   run(["pack", "--pack-destination", destination], folder);
   const tarball = join(destination, `${pkg.name.replace(/^@/, "").replace("/", "-")}-${pkg.version}.tgz`);
   // pnpm's allowlisted package contents must not accidentally ship workspace files.
-  const files = execFileSync("tar", ["-tzf", tarball], { encoding: "utf8" }).trim().split(/\r?\n/);
+  // A relative name: GNU tar (Git Bash) reads the colon in a Windows drive path as a remote host.
+  const files = execFileSync("tar", ["-tzf", basename(tarball)], { cwd: destination, encoding: "utf8" }).trim().split(/\r?\n/);
   for (const file of files) {
     if (!/^package\/(dist\/[^\s]+\.(?:js|d\.ts)|fixtures\/[^\s]+\.json|keys\/login_vk\.json|package\.json|README\.md|LICENSE)$/.test(file)) {
       throw new Error(`Unexpected packed file: ${file}`);
@@ -206,6 +207,8 @@ ${includeBot ? "import { BotOnboarding, type BotOnboardingOptions, type BotConse
 `);
   const require = createRequire(join(root, "packages", "sdk", "package.json"));
   execFileSync(process.execPath, [require.resolve("typescript/bin/tsc"), "--noEmit", "--strict", "--skipLibCheck", "--target", "ES2022", "--module", "NodeNext", "--moduleResolution", "NodeNext", "check.mts"], { cwd: consumer, stdio: "inherit" });
-  console.log(`Isolated consumer and type declarations verified: ${consumer}`);
+  // Best effort: a locked file on Windows must not fail a check that already passed.
+  try { rmSync(consumer, { recursive: true, force: true, maxRetries: 3 }); } catch { console.warn(`Could not remove ${consumer}`); }
+  console.log("Isolated consumer and type declarations verified");
 }
 console.log(`SDK archives and checksums: ${destination}`);
