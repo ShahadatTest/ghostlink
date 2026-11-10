@@ -1,0 +1,27 @@
+{
+  "comment": "Development proving artifacts that match the committed verifying keys in this directory. They are published as assets of the GitHub release named below; scripts/proving-artifacts.mjs downloads and checks them. Single-party development keys: never use them to protect real funds.",
+  "release": "v0.1.0",
+  "baseUrl": "https://github.com/Ghostlink-Labs/ghostlink/releases/download/v0.1.0",
+  "files": {
+    "login.wasm": {
+      "path": "login_js/login.wasm",
+      "bytes": 3285800,
+      "sha256": "d034416267e2f3f443f015f086e37852de4169b6a08e1709d6fb81699174ffb1"
+    },
+    "login_dev.zkey": {
+      "path": "login_dev.zkey",
+      "bytes": 13045023,
+      "sha256": "b2136363ed6b0bb1068f5d6bb3d4941b793790be04aa9afae1d4cab4e062f4d0"
+    },
+    "owner.wasm": {
+      "path": "owner_js/owner.wasm",
+      "bytes": 2289108,
+      "sha256": "cf36e6175bd7ca018d93c488f837e273baf7b2c0c03b411b6f4405870694e346"
+    },
+    "owner_dev.zkey": {
+      "path": "owner_dev.zkey",
+      "bytes": 6573799,
+      "sha256": "24c4604b1e3551089c2cc28c7cd4670108995104ec2df4959ef7a8ae5b9a9a4f"
+    }
+  }
+}
