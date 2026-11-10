@@ -9,13 +9,14 @@
  * Run it:  pnpm --filter @ghostlink/example-verify-login start
  */
 import { readFileSync } from "node:fs";
-import { verifyLogin, type VerifyLoginParams } from "@ghostlink/verify";
+import { holdingsClaim, verifyLogin, type VerifyLoginErrorCode, type VerifyLoginParams } from "@ghostlink/verify";
 
 const repo = new URL("../../../", import.meta.url);
 const readJson = (path: string) => JSON.parse(readFileSync(new URL(path, repo), "utf8"));
 
 const fixture = readJson("circuits/keys/login_offchain_proof.json");
-const signals = readJson("packages/common/fixtures/vectors.json").circuits.login.public;
+const vectors = readJson("packages/common/fixtures/vectors.json");
+const signals = vectors.circuits.login.public;
 
 // Production code reads the recent roots from the on-chain tree accounts or a trusted indexer.
 // Never take them from the client: a proof against a tree nobody recognises proves nothing.
@@ -26,7 +27,8 @@ const trustedRoots = async () => ({ registry: [signals.registry_root], census: [
 // currentSlot from its own RPC; here the chain is pretended to be an hour past the proof's bound.
 const maxAgeSlots = 9_000n; // about an hour of Solana slots
 const currentSlot = BigInt(signals.min_slot) + maxAgeSlots;
-const holdsAtLeast = { mintHi: signals.mint_hi, mintLo: signals.mint_lo, threshold: 100_000_000n };
+// The token gate: at least 100 tokens (6 decimals) of the fixture mint.
+const holdsAtLeast = holdingsClaim(Buffer.from(vectors.census.mint, "hex"), 100_000_000n);
 
 const login: VerifyLoginParams = {
   proof: fixture.proof,
@@ -41,38 +43,38 @@ const login: VerifyLoginParams = {
 const tampered = [...login.publicSignals];
 tampered[3] = "1"; // app_id: try to log in as a different user
 
-// `reject` is the reason each bad login must fail with, so a case cannot pass by failing for
-// some other reason.
-const cases: { label: string; request: VerifyLoginParams; reject?: string }[] = [
+// `reject` is the code each bad login must fail with, so a case cannot pass by failing for
+// some other reason. Servers branch on the code; the reason is for people.
+const cases: { label: string; request: VerifyLoginParams; reject?: VerifyLoginErrorCode }[] = [
   { label: "valid proof for this site", request: login },
   {
     label: "replayed on another site",
     request: { ...login, expectedDomain: "https://evil.example.com" },
-    reject: "different domain",
+    reject: "wrong_domain",
   },
   {
     label: "site demands 200 tokens, proof shows 100",
     request: { ...login, expect: { ...login.expect, holdsAtLeast: { ...holdsAtLeast, threshold: 200_000_000n } } },
-    reject: "threshold below requirement",
+    reject: "threshold_too_low",
   },
   {
     label: "same proof a day later: snapshot too old",
     request: { ...login, expect: { ...login.expect, minSlot: currentSlot + 216_000n - maxAgeSlots } },
-    reject: "snapshot window too old",
+    reject: "snapshot_too_old",
   },
   {
     label: "built against an unknown tree",
     request: { ...login, roots: async () => ({ registry: ["42"], census: [signals.census_root] }) },
-    reject: "unknown registry root",
+    reject: "unknown_root",
   },
-  { label: "tampered public signal", request: { ...login, publicSignals: tampered }, reject: "failed verification" },
+  { label: "tampered public signal", request: { ...login, publicSignals: tampered }, reject: "invalid_proof" },
 ];
 
 console.log("GhostLink login verification: a real Groth16 proof with no wallet address inside\n");
 let failures = 0;
 for (const { label, request, reject } of cases) {
   const result = await verifyLogin(request);
-  const asExpected = reject === undefined ? result.ok : !result.ok && (result.reason ?? "").includes(reject);
+  const asExpected = reject === undefined ? result.ok : !result.ok && result.code === reject;
   if (!asExpected) failures++;
   const outcome = result.ok
     ? `accepted, app user ID ${result.appId!.slice(0, 6)}...${result.appId!.slice(-4)}`
