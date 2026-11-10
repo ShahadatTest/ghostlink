@@ -4,13 +4,13 @@ React bindings for the [GhostLink SDK](../sdk/README.md): a provider that owns o
 
 ```tsx
 import { ContinueWithGhostLink, GhostLinkProvider, useGhostLink } from "@ghostlink/react";
-import { createProver } from "@ghostlink/prover-wasm";
+import { createWorkerProver } from "@ghostlink/prover-wasm";
 import type { GhostLink, GhostLinkSession } from "@ghostlink/sdk";
 
 const config = {
   cluster: "localnet" as const,
   indexer: "http://127.0.0.1:8787",
-  prover: createProver({ login: { wasmUrl, zkeyUrl, wasmSha256, zkeySha256 } }),
+  prover: createWorkerProver({ login: { wasmUrl, zkeyUrl, wasmSha256, zkeySha256 } }), // proves in a Web Worker
 };
 
 // Your login flow (loginParams and sendToBackend are your app's code): gather the identity and
@@ -57,5 +57,13 @@ While a login runs the button has `aria-busy="true"` and `aria-disabled="true"`,
 `useGhostLink()` and the button throw when rendered outside a `GhostLinkProvider`.
 
 The session, including its signing key, lives only in React state. Do not persist it.
+
+## Next.js App Router and module format
+
+The built entry starts with `"use client"`, so every export is a client component and you can import the package from a server component without a wrapper file. Props that cross from a server component to a client component must be serializable, though: `config` with a `prover`, and `onLogin`, are functions. Render `<GhostLinkProvider>` and `<ContinueWithGhostLink>` from a client component of your own when you pass them, which is the usual case. Nothing runs at import time, and the client is created on first use in the browser.
+
+The example proves with `createWorkerProver` from [`@ghostlink/prover-wasm`](../prover-wasm/README.md), which runs in a Web Worker so the page stays responsive while a proof runs.
+
+The package is ESM only: `"type": "module"` and an `exports` map with `types`, `import` and `default` conditions. TypeScript finds the types with `moduleResolution` set to `NodeNext` or `Bundler`. React 18 or later is a peer dependency, and the JSX compiles to `react/jsx-runtime`.
 
 Development networks only. See the [SDK](../sdk/README.md), [`@ghostlink/prover-wasm`](../prover-wasm/README.md) and [`@ghostlink/verify`](../verify/README.md).

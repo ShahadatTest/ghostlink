@@ -1,3 +1,4 @@
+"use client";
 /**
  * React bindings for GhostLink. An app wraps itself in
  * <GhostLinkProvider>, reads state through useGhostLink(), and drops

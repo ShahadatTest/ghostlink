@@ -137,3 +137,13 @@ describe("ContinueWithGhostLink", () => {
     expect(button().props).toMatchObject({ "aria-busy": false, "aria-disabled": false, children: "Continue with GhostLink" });
   });
 });
+
+describe("Next.js App Router", () => {
+  it('starts the entry with the "use client" directive, ahead of every import', async () => {
+    const { readFileSync } = await import("node:fs");
+    const source = readFileSync(new URL("../src/index.tsx", import.meta.url), "utf8");
+    // A directive only counts as the first statement; comments may precede it.
+    const body = source.replace(/^(?:\s+|\/\/[^\n]*\n|\/\*[\s\S]*?\*\/)*/, "");
+    expect(body.startsWith('"use client";')).toBe(true);
+  });
+});
