@@ -19,7 +19,9 @@ import {
   proofToBytes,
   publicSignalsToBytes,
   registryLeaf,
+  joinBytes32,
   splitBytes32,
+  type HoldingsClaim,
   type ProofBytes,
   type Policy,
   type SessionDeployment,
@@ -27,19 +29,58 @@ import {
 import type { DerivedIdentity } from "./identity.js";
 import { sessionCommitmentFor, type SessionPublicKey } from "./session.js";
 
-/** What apps may claim. V1 ships holdsAtLeast; more claims are additive. */
-export interface HoldsAtLeastClaim {
-  kind: "holdsAtLeast";
-  mint: Uint8Array;
-  amount: bigint;
+/**
+ * What a login proof may claim: holding at least `threshold` of `mint`
+ * (`HoldingsClaim` from @ghostlink/common, the shape every package uses),
+ * in a census snapshot no older than `maxAgeSlots`.
+ */
+export interface HoldsAtLeastClaim extends HoldingsClaim {
+  kind?: "holdsAtLeast";
   /**
    * How old the census snapshot may be. Turned into the circuit's
-   * `min_slot` (= currentSlot − maxAgeSlots) by `buildLoginInput` when
-   * `currentSlot` is given; the pocket additionally caps it at ~1 hour.
+   * `min_slot` (= currentSlot - maxAgeSlots) by `buildLoginInput` when
+   * `currentSlot` is given; the pocket additionally caps it at about 1 hour.
    */
   maxAgeSlots: bigint;
 }
-export type Claim = HoldsAtLeastClaim;
+
+/** The 0.1 shape, still accepted: `amount` is now `threshold`. */
+export interface LegacyHoldsAtLeastClaim {
+  kind: "holdsAtLeast";
+  mint: Uint8Array;
+  amount: bigint;
+  maxAgeSlots: bigint;
+}
+
+export type Claim = HoldsAtLeastClaim | LegacyHoldsAtLeastClaim;
+
+/** A claim in its current shape; accepts the legacy `amount` field. */
+export function normalizeClaim(claim: Claim): HoldsAtLeastClaim {
+  const threshold = "threshold" in claim ? claim.threshold : (claim as LegacyHoldsAtLeastClaim).amount;
+  if (typeof threshold !== "bigint") throw new Error("a holdings claim needs a bigint threshold");
+  if (!(claim.mint instanceof Uint8Array) || claim.mint.length !== 32) throw new Error("claim mint must be 32 bytes");
+  return { kind: "holdsAtLeast", mint: claim.mint, threshold, maxAgeSlots: claim.maxAgeSlots };
+}
+
+/** The holdings claim a login proof makes publicly, with the snapshot bound it proved. */
+export interface ProvenClaim extends HoldingsClaim {
+  /** The proof's `min_slot`: its census snapshot is at or after this slot. */
+  minSlot: bigint;
+}
+
+/** Reads the holdings claim from a login proof's 12 public signals; null when it makes none. */
+export function provenClaim(publicSignals: readonly string[]): ProvenClaim | null {
+  if (!Array.isArray(publicSignals) || publicSignals.length !== 12) throw new Error("expected the 12 login public signals");
+  const signal = (i: number) => {
+    const s = publicSignals[i];
+    if (typeof s !== "string" || !/^(0|[1-9][0-9]{0,76})$/.test(s)) throw new Error("malformed public signal");
+    return BigInt(s);
+  };
+  const claimed = signal(10);
+  if (claimed === 0n) return null;
+  if (claimed !== 1n) throw new Error("malformed claim flag");
+  return { mint: joinBytes32(signal(4), signal(5)), threshold: signal(6), minSlot: signal(7) };
+}
 
 /** Merkle data the indexer serves; every path is verified before use. */
 export interface MerkleWitness {
@@ -88,7 +129,7 @@ export function verifyWitness(leaf: FieldElement, w: MerkleWitness): boolean {
 export function buildLoginInput(params: {
   identity: DerivedIdentity;
   origin: string;
-  claim?: HoldsAtLeastClaim;
+  claim?: Claim;
   /** Explicit `min_slot`; otherwise derived from `currentSlot − claim.maxAgeSlots`. */
   minSlot?: bigint;
   /** The chain's current slot, needed to derive `min_slot` for a claim. */
@@ -107,8 +148,9 @@ export function buildLoginInput(params: {
    */
   authorizationEpoch?: bigint;
 }): { input: CircuitInput; appId: FieldElement; domainHash: FieldElement } {
-  const { identity, origin, claim, session, expirySlot, home, witness } = params;
-  const minSlot = resolveMinSlot(params);
+  const { identity, origin, session, expirySlot, home, witness } = params;
+  const claim = params.claim === undefined ? undefined : normalizeClaim(params.claim);
+  const minSlot = resolveMinSlot({ ...params, claim });
   const dHash = domainHash(origin);
   const id = appId(identity.sField, dHash);
   const pk = splitBytes32(witness.registry.walletPubkey);
@@ -122,7 +164,7 @@ export function buildLoginInput(params: {
       censusLeaf(witness.registry.walletPubkey, claim.mint, witness.census.amount, witness.census.slot),
       witness.census,
     )) throw new Error("invalid census witness");
-    if (witness.census.amount < claim.amount || witness.census.slot < minSlot) {
+    if (witness.census.amount < claim.threshold || witness.census.slot < minSlot) {
       throw new Error("census snapshot does not satisfy the holdings claim");
     }
   }
@@ -135,7 +177,7 @@ export function buildLoginInput(params: {
     app_id: id.toString(),
     mint_hi: mint.hi.toString(),
     mint_lo: mint.lo.toString(),
-    threshold: (claim?.amount ?? 0n).toString(),
+    threshold: (claim?.threshold ?? 0n).toString(),
     min_slot: minSlot.toString(),
     session_commitment: sessionCommitmentFor(session, expirySlot).toString(),
     home_hash: homeHash(home).toString(),

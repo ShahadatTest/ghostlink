@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
-import { hexToBytes } from "@ghostlink/common";
+import bs58 from "bs58";
+import { bytesToHex, fieldToBytes32, hexToBytes } from "@ghostlink/common";
 import {
   GhostLink, RelayerOperationFailedError, RelayerOperationPendingError, sessionPublicKey, softwareSession,
 } from "../src/index.js";
@@ -41,7 +42,7 @@ describe("openSession receipts", () => {
     expect(first).not.toBeInstanceOf(RelayerOperationPendingError);
     expect(first).toMatchObject({ name: "RelayerOperationFailedError", receipt: { state: "failed", signature } });
     // A retry reuses the deterministic request ID, so it can only replay the same failure.
-    const again = await client.openSession(authorization, pocket, claimFields).catch((e: unknown) => e);
+    const again = await client.openSession(authorization, pocket).catch((e: unknown) => e);
     expect(again).toBeInstanceOf(RelayerOperationFailedError);
     expect((again as RelayerOperationFailedError).operation.requestIdHex).toBe((first as RelayerOperationFailedError).operation.requestIdHex);
     expect(fetchFn).toHaveBeenCalledTimes(2);
@@ -51,7 +52,7 @@ describe("openSession receipts", () => {
     for (const state of ["preparing", "pending", "unknown"] as const) {
       const { client, authorization, pocket, claimFields } = await authorized((requestIdHex) =>
         Response.json({ requestIdHex, state, ...(state === "pending" && { signature }) }, { status: 202 }));
-      const error = await client.openSession(authorization, pocket, claimFields).catch((e: unknown) => e);
+      const error = await client.openSession(authorization, pocket, { timeoutMs: 0 }).catch((e: unknown) => e);
       expect(error).toBeInstanceOf(RelayerOperationPendingError);
       expect(error).toMatchObject({ receipt: { state } });
     }
@@ -62,10 +63,11 @@ describe("openSession receipts", () => {
       Response.json({ requestIdHex, state: "confirmed", signature, slot: 50, confirmationStatus: "confirmed" }));
     const roots = { registry: BigInt(fixture.publicSignals[0]), census: BigInt(fixture.publicSignals[1]) };
     const domain = BigInt(fixture.publicSignals[2]);
-    const open = (fields = claimFields, r?: typeof roots, d?: bigint, session = authorization) => client.openSession(session, pocket, fields, r, d);
+    const open = (fields: typeof claimFields | null = claimFields, r?: typeof roots, d?: bigint, session = authorization) =>
+      client.openSession(session, pocket, { claim: fields, roots: r, domainHash: d });
     for (const mismatched of [
       () => open({ ...claimFields, mint: new Uint8Array(32).fill(1) }), () => open({ ...claimFields, threshold: claimFields.threshold + 1n }),
-      () => open({ ...claimFields, minSlot: claimFields.minSlot - 1n }), () => open({ ...claimFields, claim: false }),
+      () => open({ ...claimFields, minSlot: claimFields.minSlot - 1n }), () => open({ ...claimFields, claim: false }), () => open(null),
       () => open(claimFields, { ...roots, registry: roots.registry + 1n }), () => open(claimFields, { ...roots, census: 1n }),
       () => open(claimFields, roots, domain + 1n), () => open(claimFields, roots, domain, { ...authorization, expirySlot: authorization.expirySlot + 1n }),
     ]) {
@@ -73,7 +75,14 @@ describe("openSession receipts", () => {
     }
     expect(fetchFn).not.toHaveBeenCalled();
     // Values equal to the proved ones, given or omitted, are accepted.
+    // The deprecated 0.1 positional form still works.
     await expect(client.openSession(authorization, pocket, claimFields, roots, domain)).resolves.toEqual({ signature });
-    await expect(client.openSession(authorization, pocket, claimFields)).resolves.toEqual({ signature });
+    await expect(client.openSession(authorization, pocket, { claim: { mint: claimFields.mint, threshold: claimFields.threshold, minSlot: claimFields.minSlot }, roots, domainHash: domain }))
+      .resolves.toEqual({ signature });
+    // Nothing to restate: every relayed value is read from the proof.
+    await expect(client.openSession(authorization, pocket)).resolves.toEqual({ signature });
+    const sent = JSON.parse(String(fetchFn.mock.calls.at(-1)![1]!.body));
+    expect(sent).toMatchObject({ mint: bs58.encode(claimFields.mint), threshold: claimFields.threshold.toString(), minSlot: claimFields.minSlot.toString(), claimHoldings: true,
+      registryRootHex: bytesToHex(fieldToBytes32(roots.registry)), domainHashHex: bytesToHex(fieldToBytes32(domain)) });
   });
 });

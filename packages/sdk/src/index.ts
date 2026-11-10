@@ -13,3 +13,7 @@ export * from "./telegram.js";
 export * from "./pairing.js";
 export type { IntentSubmission } from "@ghostlink/common";
 export * from "./relayer.js";
+export * from "./chain.js";
+export * from "./owner.js";
+export { associatedTokenAddress, pocketChangeBorsh, type GhostLinkInstruction, type InstructionAccount } from "./instructions.js";
+export { holdingsClaim, claimMintFields, holdingsClaimFromFields, type HoldingsClaim, type HoldingsClaimFields } from "@ghostlink/common";
