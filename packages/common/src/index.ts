@@ -12,3 +12,4 @@ export * from "./authorization.js";
 export * from "./consent.js";
 export * from "./deployment.js";
 export * from "./relayer.js";
+export * from "./claim.js";
