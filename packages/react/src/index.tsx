@@ -13,6 +13,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type ReactNode,
 } from "react";
 import {
@@ -131,6 +132,8 @@ interface ButtonProps {
   /** Text shown while a login runs. Defaults to "Proving…", or "Waiting for approval…" with `identityOrigin`. */
   busyLabel?: string;
   className?: string;
+  /** Inline styles for the button, for apps without a stylesheet. */
+  style?: CSSProperties;
 }
 
 /** The app proves on this page itself (it holds the identity): needs a <GhostLinkProvider>. */
@@ -163,7 +166,7 @@ export interface ContinueWithGhostLinkHandoffProps extends ButtonProps, Omit<Req
 export type ContinueWithGhostLinkProps = ContinueWithGhostLinkFlowProps | ContinueWithGhostLinkHandoffProps;
 
 export function ContinueWithGhostLink(props: ContinueWithGhostLinkProps) {
-  const { label = "Continue with GhostLink", className } = props;
+  const { label = "Continue with GhostLink", className, style } = props;
   const handoff = typeof props.identityOrigin === "string";
   const busyLabel = props.busyLabel ?? (handoff ? "Waiting for approval…" : "Proving…");
   // Read unconditionally (hooks keep their order); only the in-page flow needs a provider.
@@ -182,7 +185,7 @@ export function ContinueWithGhostLink(props: ContinueWithGhostLinkProps) {
     try {
       if (props.identityOrigin !== undefined) {
         // Called before anything awaits, so the popup opens inside this click's user gesture.
-        const { onSignIn, label: _l, busyLabel: _b, className: _c, onLogin: _o, ...options } = props;
+        const { onSignIn, label: _l, busyLabel: _b, className: _c, style: _s, onLogin: _o, ...options } = props;
         await onSignIn(await requestLogin(options));
       } else {
         await context!.login(props.onLogin);
@@ -203,6 +206,7 @@ export function ContinueWithGhostLink(props: ContinueWithGhostLinkProps) {
       <button
         type="button"
         className={className}
+        style={style}
         onClick={click}
         aria-busy={busy}
         aria-disabled={busy}
