@@ -53,6 +53,8 @@ done
 # Server verification must use the same key as the generated prover and
 # the Rust verifier. A throwaway setup changes all three together.
 cp circuits/keys/login_vk.json packages/verify/keys/login_vk.json
+# The verifier compiles this key into its module: refresh that copy too.
+node packages/verify/scripts/embed-key.mjs
 
 echo "== proving fixture inputs end-to-end =="
 node circuits/scripts/prove-fixtures.mjs

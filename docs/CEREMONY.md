@@ -84,7 +84,7 @@ scripts/ceremony/verify.sh <dir> <min-contributions> final
 - requires the chain to end in one beacon contribution made from `beacon.txt`, and the verifying keys in `final/` to come from the sealed keys. Check `beacon.txt` against the announced source yourself;
 - regenerates the transcript and refuses a published `TRANSCRIPT.md` that differs by a single byte.
 
-The repository's keys must match the transcript: `circuits/keys/<circuit>_vk.json` and `packages/verify/keys/login_vk.json` have the SHA-256 listed for `final/<circuit>_vk.json`, and `cargo run -p ghostlink-verifier --bin gen-vk --features circom-vk` leaves `programs/verifier/src/vks/` unchanged.
+The repository's keys must match the transcript: `circuits/keys/<circuit>_vk.json` and `packages/verify/keys/login_vk.json` have the SHA-256 listed for `final/<circuit>_vk.json`, `packages/verify/src/login-vk.ts` holds the same key compiled in (the verify tests compare them), and `cargo run -p ghostlink-verifier --bin gen-vk --features circom-vk` leaves `programs/verifier/src/vks/` unchanged.
 
 ## Installing the keys
 

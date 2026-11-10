@@ -6,6 +6,7 @@
 #
 #   circuits/keys/<circuit>_vk.json      verifying keys            committed
 #   packages/verify/keys/login_vk.json   server login key          committed
+#   packages/verify/src/login-vk.ts     compiled-in copy of it    committed
 #   circuits/keys/*proof*.json, owner_actions.json  fixture proofs committed
 #   programs/verifier/src/vks/*_vk.rs    Rust verifying keys       committed
 #   circuits/build/<circuit>_final.zkey, <circuit>_js/, .r1cs, .sym   ignored
@@ -38,6 +39,8 @@ for c in "${CIRCUITS[@]}"; do
   cp "$DIR/final/${c}_vk.json" "$REPO_ROOT/circuits/keys/${c}_vk.json"
 done
 cp "$REPO_ROOT/circuits/keys/login_vk.json" "$REPO_ROOT/packages/verify/keys/login_vk.json"
+# The verifier compiles this key into its module: refresh that copy too.
+node "$REPO_ROOT/packages/verify/scripts/embed-key.mjs"
 
 echo "== proving the fixture inputs with the ceremony keys =="
 (cd "$REPO_ROOT" && GHOSTLINK_ZKEY_SUFFIX=final node circuits/scripts/prove-fixtures.mjs)
