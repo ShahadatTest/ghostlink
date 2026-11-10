@@ -68,7 +68,7 @@ import {
   type Prover,
 } from "./login.js";
 import {
-  copySessionPublicKey, sessionCommitmentFor, softwareSession, type SessionPublicKey, type SessionSigner,
+  SESSION_KIND_ED25519, copySessionPublicKey, sessionCommitmentFor, softwareSession, type SessionPublicKey, type SessionSigner,
 } from "./session.js";
 import {
   cancelDigest,
@@ -106,6 +106,7 @@ import {
 } from "./instructions.js";
 import { ownerActionRequest, type OwnerActionKind, type OwnerAuthorization, type SweepTokenPair } from "./owner.js";
 import { unboundFetch } from "./transport.js";
+import { handoffOrigin } from "./handoff.js";
 
 export interface GhostLinkConfig {
   /** Must equal `deployment.cluster` when a deployment is given. */
@@ -236,6 +237,19 @@ export interface WitnessParams {
   wait?: { timeoutMs: number; pollMs?: number; signal?: AbortSignal };
 }
 
+/** A login-only proof for a session key someone else holds (`GhostLink.authorizeLogin`). */
+export interface LoginAuthorizationParams {
+  identity: DerivedIdentity;
+  witness: LoginWitnessData;
+  claim?: Claim;
+  /** A public signal: prefer `currentSlot` (read from `chain` when omitted and a claim needs it). */
+  minSlot?: bigint;
+  currentSlot?: bigint;
+  /** The Ed25519 public key whose holder will sign the site's challenge. */
+  session: SessionPublicKey;
+  expirySlot: bigint;
+}
+
 export interface OwnerActionParams {
   identity: DerivedIdentity;
   /** The registry witness (`witness()` without a mint is enough). */
@@ -295,6 +309,7 @@ export class GhostLink {
   private readonly fetchFn: typeof fetch;
   #genesis?: Promise<ChainReader>;
   #slot = 0n;
+  #origin?: string;
 
   private constructor(config: GhostLinkConfig, deployment: Readonly<DeploymentManifest>) {
     this.config = config;
@@ -308,6 +323,7 @@ export class GhostLink {
 
   /** Origin used by this facade; callers holding the secret still control it. */
   origin(): string {
+    if (this.#origin !== undefined) return this.#origin;
     if (typeof window !== "undefined" && window.location?.origin) {
       return window.location.origin;
     }
@@ -315,6 +331,25 @@ export class GhostLink {
       throw new Error("no origin outside the browser: pass GhostLink.init({ origin: \"https://your.app\", ... })");
     }
     return this.config.origin;
+  }
+
+  /**
+   * A client whose proofs, pockets and owner actions are for `origin`
+   * instead of this page's, with the same configuration. For an identity
+   * app that answers sites through the handoff (docs/IDENTITY-HANDOFF.md):
+   * it proves for the origin the browser reported, which is not its own.
+   * This grants nothing new: whoever holds the identity secret can derive
+   * every origin's ID with the pure helpers. It only lets the identity app,
+   * the one place that may hold the secret, act for a site. `origin` must
+   * be an exact https origin (http only on a loopback host), as a browser
+   * reports it in `MessageEvent.origin`.
+   */
+  forOrigin(origin: string): GhostLink {
+    const exact = handoffOrigin(origin);
+    if (!exact) throw new Error("forOrigin needs an exact origin such as https://app.example.com (http only on localhost)");
+    const client = new GhostLink(this.config, this.deployment);
+    client.#origin = exact;
+    return client;
   }
 
   // ---- chain --------------------------------------------------------------
@@ -656,6 +691,22 @@ export class GhostLink {
     if (!params.policy) throw new Error("Bot authorization requires an explicit approved policy");
     if (!(params.home instanceof Uint8Array)) throw new Error("Bot authorization requires an explicit home");
     return this.prepareAuthorization(params);
+  }
+
+  /**
+   * A login-only proof for this client's origin bound to a session PUBLIC
+   * key that someone else holds: the site in an identity handoff, which
+   * generated the key pair and signs its backend's nonce itself. Binds the
+   * zero home and no pocket policy, so it cannot open or renew a pocket.
+   * Ed25519 keys only (what `verifyLoginChallenge` checks). Use with
+   * `forOrigin` in an identity app; a site proving for itself uses `prove`.
+   */
+  async authorizeLogin(params: LoginAuthorizationParams): Promise<GhostLinkAuthorization> {
+    if (params?.session?.kind !== SESSION_KIND_ED25519) throw new Error("authorizeLogin binds an Ed25519 session public key");
+    return this.prepareAuthorization({
+      identity: params.identity, witness: params.witness, claim: params.claim, minSlot: params.minSlot,
+      currentSlot: params.currentSlot, session: params.session, expirySlot: params.expirySlot, home: new Uint8Array(32),
+    });
   }
 
   private async prepareAuthorization(params: Omit<SessionAuthorizationParams, "policy"> & { policy?: Policy }): Promise<GhostLinkAuthorization> {

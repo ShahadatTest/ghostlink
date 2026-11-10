@@ -6,6 +6,7 @@ export * from "./pocket.js";
 export * from "./funding.js";
 export * from "./ghostlink.js";
 export * from "./wallet-standard.js";
+export * from "./handoff.js";
 export * from "./domains.js";
 export { ApplicationRegistry, applicationRegistryDigest, type ApplicationManifest, type TrustedApplication } from "./applications.js";
 export * from "./owner-consent.js";
