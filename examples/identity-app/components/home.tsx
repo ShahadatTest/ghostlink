@@ -61,7 +61,7 @@ function Registration() {
         A wallet can register exactly one identity, once. Registration publishes a commitment to your
         identity next to your wallet address; it reveals nothing about which sites you use.</p>
       <div style={s.row}>
-        <Button onClick={() => void register()}>Register this identity</Button>
+        {!status.startsWith("Registered") && <Button onClick={() => void register()}>Register this identity</Button>}
         <Button secondary onClick={() => void check()}>Check again</Button>
       </div>
     </section>
