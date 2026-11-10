@@ -6,6 +6,7 @@
  * bundled RPC client.
  */
 import { ed25519 } from "@noble/curves/ed25519";
+import { sha256 } from "@noble/hashes/sha256";
 import {
   Cluster,
   DeploymentError,
@@ -282,6 +283,8 @@ export function resolveDeployment(cluster: Cluster, deployment?: unknown): Reado
   return parsed;
 }
 
+const CENSUS_CONFIG_DISCRIMINATOR = sha256(new TextEncoder().encode("account:Config")).subarray(0, 8);
+
 /** Proof verification on chain; the compute-budget instruction every owner action and session opening carries. */
 const PROOF_COMPUTE_UNITS = 400_000;
 
@@ -382,7 +385,8 @@ export class GhostLink {
     if (this.config.chain) {
       const binding = await (await this.#chain()).getAccount(bindingPda(wallet, base58(this.deployment.registryProgram)).address,
         this.#slot > 0n ? this.#slot : undefined);
-      if (binding && binding.data.length >= 48) {
+      // Lamports sent to the binding address beforehand leave a system-owned account, not a registration.
+      if (binding && toBase58(binding.owner) === this.deployment.registryProgram && binding.data.length >= 48) {
         const same = bytesToHex(binding.data.subarray(16, 48)) === bytesToHex(fieldToBytes32(identity.commitment));
         throw new Error(same ? "this wallet is already registered with this identity" :
           "this wallet is already registered with a different identity; a registration can never be replaced");
@@ -421,7 +425,8 @@ export class GhostLink {
     if (fee === undefined) {
       const config = await (await this.#chain()).getAccount(censusConfigPda(base58(this.deployment.censusProgram)).address,
         this.#slot > 0n ? this.#slot : undefined);
-      if (!config || toBase58(config.owner) !== this.deployment.censusProgram || config.data.length !== 17) {
+      if (!config || toBase58(config.owner) !== this.deployment.censusProgram || config.data.length !== 17 ||
+        !CENSUS_CONFIG_DISCRIMINATOR.every((byte, i) => config.data[i] === byte)) {
         throw new Error("census fee configuration unavailable");
       }
       fee = 0n;

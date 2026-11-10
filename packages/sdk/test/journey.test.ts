@@ -174,6 +174,10 @@ describe("registration and census", () => {
       "Sysvar1nstructions1111111111111111111111111", "11111111111111111111111111111111"]);
     expect(register!.data.subarray(8)).toEqual(fieldToBytes32(identity.commitment));
     const binding = new Uint8Array(56); binding.set(fieldToBytes32(identity.commitment), 16);
+    // Lamports sent to the binding address before registering leave a system account: not a registration.
+    accounts.set(bs58.encode(bindingPda(wallet, pk(LOCALNET_DEPLOYMENT.registryProgram)).address),
+      { owner: new Uint8Array(32), data: binding, lamports: 1n });
+    await expect(client.registerInstructions({ identity, wallet, signMessage, payer })).resolves.toHaveLength(2);
     accounts.set(bs58.encode(bindingPda(wallet, pk(LOCALNET_DEPLOYMENT.registryProgram)).address),
       { owner: pk(LOCALNET_DEPLOYMENT.registryProgram), data: binding, lamports: 1n });
     await expect(client.registerInstructions({ identity, wallet, signMessage, payer })).rejects.toThrow(/already registered with this identity/);
