@@ -1,7 +1,7 @@
 {
   "name": "@ghostlink/prover-wasm",
   "version": "0.1.0",
-  "description": "Browser prover for GhostLink with optional artifact integrity checks; runs in the caller's context.",
+  "description": "Browser prover for GhostLink with artifact integrity checks; proves in a Web Worker or on the calling thread.",
   "keywords": [
     "ghostlink",
     "solana",
@@ -10,7 +10,8 @@
     "snarkjs",
     "prover",
     "wasm",
-    "browser"
+    "browser",
+    "web-worker"
   ],
   "homepage": "https://github.com/Ghostlink-Labs/ghostlink/tree/main/packages/prover-wasm#readme",
   "bugs": {
@@ -23,7 +24,9 @@
   },
   "license": "Apache-2.0",
   "type": "module",
-  "sideEffects": false,
+  "sideEffects": [
+    "./dist/worker.js"
+  ],
   "engines": {
     "node": ">=20"
   },
@@ -34,6 +37,11 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
+    },
+    "./worker": {
+      "types": "./dist/worker.d.ts",
+      "import": "./dist/worker.js",
+      "default": "./dist/worker.js"
     },
     "./package.json": "./package.json"
   },

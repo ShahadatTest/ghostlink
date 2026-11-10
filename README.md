@@ -164,7 +164,7 @@ The TypeScript encoders, Rust programs and circom circuits share one set of [tes
 | --- | --- |
 | [`@ghostlink/sdk`](packages/sdk/) | Identity derivation, proofs, session keys, pockets, intents, funding checks and a durable relayer client |
 | [`@ghostlink/verify`](packages/verify/) | Server-side login proof verification with domain, claim, freshness, session, root and challenge-signature checks |
-| [`@ghostlink/prover-wasm`](packages/prover-wasm/) | In-browser Groth16 prover with pinned artifact hashes |
+| [`@ghostlink/prover-wasm`](packages/prover-wasm/) | In-browser Groth16 prover with pinned artifact hashes, run in a Web Worker or on the calling thread |
 | [`@ghostlink/react`](packages/react/) | `GhostLinkProvider`, `useGhostLink` and an unstyled `ContinueWithGhostLink` button |
 | [`@ghostlink/bot`](packages/bot/) | Node.js bot backend: Telegram authentication, owner consent, encrypted session keys and durable orders |
 | [`@ghostlink/common`](packages/common/) | Canonical encodings, Poseidon hashes, Merkle trees, PDAs and the cross-language vectors |
