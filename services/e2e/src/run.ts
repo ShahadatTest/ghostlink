@@ -15,7 +15,9 @@
  *   8. fill through the solver (inventory, or cloned Jupiter with the fork fixture)
  *   9. sweep home with an owner proof through the relayer
  *
- * Expects a validator prepared by scripts/localnet-e2e.sh.
+ * Expects a validator prepared by scripts/localnet-e2e.sh. Runs against the
+ * deployment named by GHOSTLINK_DEPLOYMENT (the built-in localnet one when
+ * unset): every client, service and proof below uses its program IDs.
  */
 import { once } from "node:events";
 import { readFileSync } from "node:fs";
@@ -35,6 +37,7 @@ import * as snarkjs from "snarkjs";
 
 import {
   DEFAULT_SNAPSHOT_FEE_LAMPORTS,
+  assertDeploymentGenesis,
   bytesToHex,
   hexToBytes,
   appId as deriveAppId,
@@ -44,6 +47,8 @@ import {
   pocketAuthorizationEpoch,
   proofToBytes,
   publicSignalsToBytes,
+  sessionDeployment,
+  verifyingKeyDigest,
   type Policy,
   type SnarkjsProof,
 } from "@ghostlink/common";
@@ -71,6 +76,7 @@ import {
 } from "@ghostlink/sdk";
 import { verifyLogin } from "@ghostlink/verify";
 import {
+  DEPLOYMENT,
   POCKET,
   REGISTRY,
   ataAddress,
@@ -123,9 +129,13 @@ async function main() {
   const rpcHost = new URL(RPC).hostname;
   if (!["127.0.0.1", "localhost", "[::1]"].includes(rpcHost)) throw new Error("V2 E2E requires a loopback local validator");
   const connection = new Connection(RPC, "confirmed");
-  if (["EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG", "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d"].includes(await connection.getGenesisHash())) {
-    throw new Error("V2 E2E refuses public-chain genesis");
+  if (DEPLOYMENT.cluster !== "localnet") throw new Error("E2E runs only a localnet deployment");
+  assertDeploymentGenesis(DEPLOYMENT, await connection.getGenesisHash());
+  // The validator runs the programs at the deployment's IDs; check before relying on them.
+  for (const [name, id] of Object.entries({ registry: DEPLOYMENT.registryProgram, census: DEPLOYMENT.censusProgram, pocket: DEPLOYMENT.pocketProgram })) {
+    if (!(await connection.getAccountInfo(new PublicKey(id)))?.executable) throw new Error(`no ${name} program at ${id}`);
   }
+  console.log(`deployment: ${DEPLOYMENT.cluster} registry ${DEPLOYMENT.registryProgram} census ${DEPLOYMENT.censusProgram} pocket ${DEPLOYMENT.pocketProgram}`);
 
   // ---- keys and funds ----------------------------------------------------
   // Disposable localnet only: no funded external keys or live price accounts.
@@ -285,7 +295,8 @@ async function main() {
   // A reserved test domain (RFC 6761): nothing on chain or in committed fixtures depends on it.
   const origin = "https://demo.ghostlink.test";
   const gl = await GhostLink.init({
-    cluster: "localnet",
+    cluster: DEPLOYMENT.cluster,
+    deployment: DEPLOYMENT,
     indexer: indexerUrl,
     relayer: relayerUrl,
     solver: solverUrl,
@@ -482,13 +493,14 @@ async function main() {
 
   // ---- server-side verification -------------------------------------------
   const vk = JSON.parse(readFileSync(join(ROOT, "circuits/keys/login_vk.json"), "utf8"));
+  if (verifyingKeyDigest(vk) !== DEPLOYMENT.verifyingKeys.login) throw new Error("login verifying key is not the deployment's");
   const verdict = await verifyLogin({
     proof: loginProof.snarkjsProof,
     publicSignals: loginProof.publicSignals,
     expectedDomain: origin,
     verificationKey: vk,
     indexer: indexerUrl,
-    expect: { pocket: { policy, sessionKind: session.kind }, session: { key32: session.key32, expirySlot, currentSlot }, home: home.toBytes() },
+    expect: { pocket: { policy, sessionKind: session.kind, deployment: sessionDeployment(DEPLOYMENT) }, session: { key32: session.key32, expirySlot, currentSlot }, home: home.toBytes() },
   });
   if (!verdict.ok) throw new Error(`verifyLogin failed: ${verdict.reason}`);
   ok(`server-side verifyLogin ok, appId ${verdict.appId!.slice(0, 12)}…`);
@@ -555,7 +567,7 @@ async function main() {
   const fundTx = Transaction.from(prepareFundingTransaction(
     Buffer.from(((await fundRes.json()) as { transaction: string }).transaction, "base64"), {
       appId, funder: wallet.publicKey.toBytes(), asset: { kind: "spl", mint: inputMint.toBytes(), rawAmount: 25_000_000n },
-      recentBlockhash: bs58.decode(fundBlockhash.blockhash),
+      recentBlockhash: bs58.decode(fundBlockhash.blockhash), deployment: DEPLOYMENT,
     },
   ));
   fundTx.partialSign(wallet);
@@ -575,6 +587,7 @@ async function main() {
     const transaction = Transaction.from(prepareFundingTransaction(
       Buffer.from(((await response.json()) as { transaction: string }).transaction, "base64"), {
         appId, funder: wallet.publicKey.toBytes(), asset: { kind: "sol", lamports: 1_000_000n }, recentBlockhash: bs58.decode(blockhash.blockhash),
+        deployment: DEPLOYMENT,
       },
     ));
     transaction.sign(wallet);

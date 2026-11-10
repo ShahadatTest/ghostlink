@@ -11,7 +11,7 @@ describe("V2 local validator harness", () => {
       env: { ...process.env, RPC_URL: "http://127.0.0.1:1", PAYER_KEYPAIR: "never-read.json" }, encoding: "utf8", timeout: 15_000,
     });
     expect(result.status).toBe(1);
-    expect(result.stderr).toContain("V2 has no verified devnet deployment");
+    expect(result.stderr).toContain("The V1 devnet runner is retired");
   });
 
   it("refuses funded payer configuration before reading a key or contacting RPC", () => {
@@ -47,7 +47,7 @@ describe("V2 local validator harness", () => {
       await expect(promisify(execFile)(process.execPath, [fileURLToPath(new URL("../dist/run.js", import.meta.url))], {
         env: { ...process.env, PAYER_KEYPAIR: "", RPC_URL: `http://127.0.0.1:${addr.port}`,
           JUPITER_FIXTURE_DIR: "a-fixture-directory-that-must-never-be-read" }, timeout: 15_000,
-      })).rejects.toMatchObject({ code: 1, stderr: expect.stringContaining("refuses public-chain genesis") });
+      })).rejects.toMatchObject({ code: 1, stderr: expect.stringContaining("localnet deployment refuses the devnet genesis") });
       expect(methods).toEqual(["getGenesisHash"]);
     } finally { await new Promise<void>(resolve => server.close(() => resolve())); }
   });

@@ -2,13 +2,14 @@
 import { createServer } from "node:http";
 import { once } from "node:events";
 import type { Connection } from "@solana/web3.js";
+import { PUBLIC_GENESIS_HASHES } from "@ghostlink/common";
 import { createRpcPool } from "@ghostlink/service-kit/rpc";
 
 export async function startRpcFaultFixture(upstream: Connection) {
   const url = new URL(upstream.rpcEndpoint);
   if (!["127.0.0.1", "localhost", "[::1]"].includes(url.hostname)) throw new Error("RPC fault drill requires loopback");
   const genesisHash = await upstream.getGenesisHash();
-  if (["EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG", "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d"].includes(genesisHash)) throw new Error("RPC fault drill refuses public genesis");
+  if (Object.values(PUBLIC_GENESIS_HASHES).includes(genesisHash)) throw new Error("RPC fault drill refuses public genesis");
   let armed = false, dropped = false, secondaryStatus = 0, outage = false;
   const sent: { provider: number; body: string }[] = [];
   const servers = [0, 1].map(index => createServer(async (req, res) => {

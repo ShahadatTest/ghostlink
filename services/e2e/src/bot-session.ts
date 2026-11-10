@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { once } from "node:events";
 import type { Connection } from "@solana/web3.js";
-import { bytesToHex, CENSUS_PROGRAM_ID, POCKET_PROGRAM_ID, REGISTRY_PROGRAM_ID, toBase58, type IntentSubmission, type Policy } from "@ghostlink/common";
+import { botDeployment, bytesToHex, toBase58, type IntentSubmission, type Policy } from "@ghostlink/common";
+import { DEPLOYMENT } from "@ghostlink/service-kit";
 import { BotKeyStore, BotOnboarding, createBotAuthorizationServer, type BotConsent, type BotIntentParams, type ConsentStatus, type CreateConsent } from "@ghostlink/bot";
 
 // Deliberately synthetic, never used to contact Telegram.
@@ -25,8 +26,7 @@ export async function startBotFixture(connection: Connection, appOrigin: string,
   let path = join(dir, "bot.sqlite");
   let store = new BotKeyStore(path, key);
   const options = { botToken: TOKEN, chain: connection, appOrigin, policy,
-    deployment: { cluster: "localnet" as const, genesisHash: await connection.getGenesisHash(),
-      pocketProgram: POCKET_PROGRAM_ID, registryProgram: REGISTRY_PROGRAM_ID, censusProgram: CENSUS_PROGRAM_ID } };
+    deployment: botDeployment(DEPLOYMENT, await connection.getGenesisHash()) };
   let manager = new BotOnboarding({ ...options, store });
   let server = createBotAuthorizationServer(manager, ownerOrigin);
   let url = "";

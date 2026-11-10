@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { once } from "node:events";
 import { AddressLookupTableProgram, PublicKey, Transaction, VersionedTransaction, type Connection, type Keypair } from "@solana/web3.js";
-import { POCKET_PROGRAM_ID } from "@ghostlink/common";
+import { POCKET } from "@ghostlink/service-kit";
 import { SubmissionJournal, type RecoverySession } from "@ghostlink/solver/journal";
 import { SubmissionCoordinator } from "@ghostlink/solver/submission";
 import { buildServer, MockPlanner, type RoutePlanner } from "@ghostlink/solver/server";
@@ -31,7 +31,7 @@ export async function startSolverFixture(connection: Connection, keypair: Keypai
   connection = rpcFault?.connection ?? connection;
   const dir = mkdtempSync(join(tmpdir(), "ghostlink-solver-e2e-"));
   let path = join(dir, "solver.sqlite"), key = randomBytes(32);
-  const scope = { genesisHash: await connection.getGenesisHash(), pocketProgram: POCKET_PROGRAM_ID, solver: keypair.publicKey.toBase58() };
+  const scope = { genesisHash: await connection.getGenesisHash(), pocketProgram: POCKET.toBase58(), solver: keypair.publicKey.toBase58() };
   const initialized = new SubmissionJournal(path, key, scope);
   const journalId = initialized.instanceId!; initialized.close();
   let journal = SubmissionJournal.openExisting(path, key, scope, journalId);

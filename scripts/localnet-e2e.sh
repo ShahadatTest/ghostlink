@@ -5,10 +5,29 @@
 #   scripts/build-circuits.sh  (circuit artifacts + dev keys)
 #   program .so files in $CARGO_TARGET_DIR/deploy or target/deploy
 #   pnpm install && pnpm -r build
+#
+# GHOSTLINK_DEPLOYMENT=<manifest.json> runs the same journey against a
+# localnet deployment manifest's own program IDs (docs/DEPLOYMENTS.md),
+# using the programs `scripts/build-programs.sh --deployment` built for it.
+# Every proof is made here for that deployment; no committed fixture is used.
 set -euo pipefail
+if [ -n "${GHOSTLINK_DEPLOYMENT:-}" ]; then
+  GHOSTLINK_DEPLOYMENT="$(realpath "$GHOSTLINK_DEPLOYMENT")"
+  export GHOSTLINK_DEPLOYMENT
+fi
 cd "$(dirname "$0")/.."
 
-DEPLOY_DIR="${CARGO_TARGET_DIR:-target}/deploy"
+if [ -n "${GHOSTLINK_DEPLOYMENT:-}" ]; then
+  [ "$(node scripts/deployment.mjs cluster "$GHOSTLINK_DEPLOYMENT")" = localnet ] || {
+    echo "the local validator journey needs a localnet deployment manifest" >&2; exit 1; }
+  DEPLOY_DIR="$(node scripts/deployment.mjs artifacts "$GHOSTLINK_DEPLOYMENT")"
+  IDS="$(node scripts/deployment.mjs ids "$GHOSTLINK_DEPLOYMENT")"
+else
+  DEPLOY_DIR="${CARGO_TARGET_DIR:-target}/deploy"
+  IDS="$(node scripts/deployment.mjs ids)"
+fi
+read -r REGISTRY_ID CENSUS_ID POCKET_ID <<< "$IDS"
+echo "== deployment: registry $REGISTRY_ID census $CENSUS_ID pocket $POCKET_ID =="
 GENESIS_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ghostlink-genesis.XXXXXX")"
 LEDGER_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ghostlink-ledger.XXXXXX")"
 
@@ -29,9 +48,9 @@ echo "== starting validator =="
 echo "Disposable ledger: $LEDGER_DIR"
 solana-test-validator \
   --reset --quiet --ledger "$LEDGER_DIR" \
-  --bpf-program 54EZ5ZkUANBs1SfQoXaU5EQSR8VAaD3XDtKEZGp6KjRv "$DEPLOY_DIR/ghostlink_registry.so" \
-  --bpf-program CvRA16GAa5ynUE3bzgMWuPYTbHLsdvyBydJoZVft5x9d "$DEPLOY_DIR/ghostlink_census.so" \
-  --bpf-program HbSux9YnTupzNiRUwdR2mjTpJJryx25RV42wry4kCwiH "$DEPLOY_DIR/ghostlink_pocket.so" \
+  --bpf-program "$REGISTRY_ID" "$DEPLOY_DIR/ghostlink_registry.so" \
+  --bpf-program "$CENSUS_ID" "$DEPLOY_DIR/ghostlink_census.so" \
+  --bpf-program "$POCKET_ID" "$DEPLOY_DIR/ghostlink_pocket.so" \
   --account-dir "$GENESIS_DIR" \
   &
 VALIDATOR_PID=$!
