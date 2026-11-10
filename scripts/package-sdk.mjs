@@ -91,18 +91,26 @@ if (process.argv.includes("--test")) {
   // A React app supplies react (a peer dependency) and its types: use the versions the workspace tests.
   const reactWorkspace = createRequire(join(root, "packages", "react", "package.json"));
   const reactDeps = ["react", "@types/react"].map(name => `${name}@${reactWorkspace(`${name}/package.json`).version}`);
-  run(["add", "--ignore-scripts", ...tarballs, ...reactDeps], consumer);
+  // The documentation snippets compiled below also show @solana/web3.js interop and a Node backend: the versions the SDK tests with.
+  const sdkWorkspace = createRequire(join(root, "packages", "sdk", "package.json"));
+  const docDeps = ["@solana/web3.js", "@types/node"].map(name => `${name}@${sdkWorkspace(`${name}/package.json`).version}`);
+  run(["add", "--ignore-scripts", ...tarballs, ...reactDeps, ...docDeps], consumer);
   writeFileSync(join(consumer, "check.mjs"), `
 import assert from 'node:assert/strict';
 import { createPublicKey, verify } from 'node:crypto';
 import { GhostLink, softwareSession, sessionPublicKey, derivePocket, signIntent, policyToDto, policyFromDto,
   ApplicationRegistry, applicationRegistryDigest, OwnerConsentController, verifyTelegramOwnerInitData,
   prepareTelegramPairing, parseTelegramPairingCode, verifyTelegramPairingClaim,
-  RelayerClient, prepareRelayerOperation, RelayerOperationPendingError, prepareFundingTransaction } from '@ghostlink/sdk';
+  RelayerClient, prepareRelayerOperation, RelayerOperationPendingError, RelayerRequestError, prepareFundingTransaction,
+  claimMintFields, jsonRpcChainReader } from '@ghostlink/sdk';
 import { intentHash, conservativePolicy, policyHash, u64le, LOCALNET_DEPLOYMENT, PUBLIC_GENESIS_HASHES, parseDeployment, toBase58 } from '@ghostlink/common';
 const relayerOperation = prepareRelayerOperation('/snapshot', {wallet:'wallet',holding:'holding'});
 const relayerClient = new RelayerClient('https://relayer.invalid', async () => { throw new Error('synthetic offline'); });
 await assert.rejects(relayerClient.submit(relayerOperation), e => e instanceof RelayerOperationPendingError && e.operation.digestHex === relayerOperation.digestHex);
+const refusingRelayer = new RelayerClient('https://relayer.invalid', async () => Response.json({ error: 'rate limited', code: 'rate_limited' }, { status: 429 }));
+await assert.rejects(refusingRelayer.submit(relayerOperation), e => e instanceof RelayerRequestError && e.status === 429 && e.code === 'rate_limited');
+assert.deepEqual(claimMintFields(new Uint8Array(32).fill(1)), { mintHi: '1334440654591915542993625911497130241', mintLo: '1334440654591915542993625911497130241' });
+assert.equal(await jsonRpcChainReader('https://rpc.invalid', { fetchFn: async () => Response.json({ jsonrpc: '2.0', id: 1, result: 42 }) }).getSlot(), 42n);
 const bot = softwareSession();
 const publicKey = sessionPublicKey(0, bot.key32);
 assert.equal('sign' in publicKey, false);
@@ -392,11 +400,35 @@ const cancellable = (p: WorkerProver, signal: AbortSignal) => p.prove('login', {
 void workerClient; void cancellable;
 ${includeBot ? "import { BotOnboarding, type BotOnboardingOptions, type BotConsent, type BotIntentParams, type BotOrderStatus } from '@ghostlink/bot';\nconst initBot = (options: BotOnboardingOptions) => new BotOnboarding(options);\nconst prepare = (m: BotOnboarding, c: BotConsent, requestKey: string, params: BotIntentParams) => m.prepareIntent(c.id, c, { requestKey, params });\nconst status = (m: BotOnboarding, c: BotConsent, requestKey: string): BotOrderStatus => m.orderStatus(c.id, c, requestKey);\nvoid initBot; void prepare; void status;" : ""}
 `);
+  // Every ```ts example in these documents must compile against the installed archives, so documented
+  // flows cannot drift from the API. A document's examples form one program in order (later ones use what
+  // earlier ones built); their `import { ... } from "..."` lines are merged at the top.
+  const snippetDocs = ["README.md", "packages/sdk/README.md", "packages/verify/README.md", "docs/INTEGRATIONS.md", "docs/OWNER-RECOVERY.md"];
+  const snippetFiles = [];
+  for (const doc of snippetDocs) {
+    const blocks = [...readFileSync(join(root, doc), "utf8").replace(/\r\n/g, "\n").matchAll(/^```ts\n([\s\S]*?)^```$/gm)].map(m => m[1]);
+    if (blocks.length === 0) continue;
+    const imports = new Map();
+    const bodies = blocks.map(block => block.replace(/^import\s+(type\s+)?\{([^}]*)\}\s*from\s*"([^"]+)";?[ \t]*$/gm, (_, typeOnly, names, from) => {
+      const set = imports.get(from) ?? new Set();
+      imports.set(from, set);
+      for (const name of names.split(",").map(n => n.trim()).filter(Boolean)) set.add(typeOnly && !name.startsWith("type ") ? `type ${name}` : name);
+      return "";
+    }));
+    if (bodies.some(body => /^\s*import\s/m.test(body))) throw new Error(`${doc}: write example imports as import { ... } from "..."`);
+    const header = [...imports].map(([from, names]) =>
+      `import { ${[...names].filter(n => !(n.startsWith("type ") && names.has(n.slice(5)))).join(", ")} } from "${from}";`);
+    const file = `doc-${doc.replace(/[\\/.]/g, "-")}.mts`;
+    writeFileSync(join(consumer, file), `${header.join("\n")}\n${bodies.join("\n")}\nexport {};\n`);
+    snippetFiles.push(file);
+  }
+  if (snippetFiles.length < 4) throw new Error(`expected TypeScript examples in the README files, found ${snippetFiles.length} documents`);
   const require = createRequire(join(root, "packages", "sdk", "package.json"));
   // Both resolution modes integrators use: Node's (NodeNext) and bundlers' (Bundler, as in Next.js and Vite).
   for (const resolution of [["--module", "NodeNext", "--moduleResolution", "NodeNext"], ["--module", "ESNext", "--moduleResolution", "Bundler"]]) {
-    execFileSync(process.execPath, [require.resolve("typescript/bin/tsc"), "--noEmit", "--strict", "--skipLibCheck", "--target", "ES2022", ...resolution, "check.mts"], { cwd: consumer, stdio: "inherit" });
+    execFileSync(process.execPath, [require.resolve("typescript/bin/tsc"), "--noEmit", "--strict", "--skipLibCheck", "--target", "ES2022", ...resolution, "check.mts", ...snippetFiles], { cwd: consumer, stdio: "inherit" });
   }
+  console.log(`Documentation examples compiled: ${snippetFiles.join(", ")}`);
   // Best effort: a locked file on Windows must not fail a check that already passed.
   try { rmSync(consumer, { recursive: true, force: true, maxRetries: 3 }); } catch { console.warn(`Could not remove ${consumer}`); }
   console.log("Isolated consumer and type declarations verified");
