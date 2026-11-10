@@ -17,7 +17,9 @@ const includeBot = process.argv.includes("--bot");
 const folders = ["packages/common", "packages/sdk", "packages/verify", "packages/prover-wasm", "packages/react",
   ...(includeBot ? ["services/shared", "packages/bot"] : [])];
 // Files a consumer cannot work without, beyond each package's dist entry point.
-const required = { "@ghostlink/verify": ["package/keys/login_vk.json"] };
+const required = { "@ghostlink/verify": ["package/keys/login_vk.json"], "@ghostlink/sdk": ["package/dist/handoff.js", "package/dist/handoff.d.ts"] };
+// Packages whose every module must load in a browser page: none may import a Node built-in.
+const browserOnly = new Set(["@ghostlink/sdk"]);
 // The front-end packages ship exactly these modules (each as .js and .d.ts):
 // a new file fails the check until it is listed here on purpose.
 const exactModules = {
@@ -75,6 +77,12 @@ for (const relative of folders) {
       }
     }
   }
+  if (browserOnly.has(pkg.name)) {
+    for (const file of files.filter(f => /^package\/dist\/[^/]+\.js$/.test(f))) {
+      const source = execFileSync("tar", ["-xOzf", basename(tarball), file], { cwd: destination, encoding: "utf8" });
+      if (nodeOnly.test(source)) throw new Error(`${pkg.name} ${file.slice(8)} loads a Node built-in or uses require`);
+    }
+  }
   tarballs.push(tarball);
   packageOverrides[pkg.name] = `file:${tarball.replaceAll("\\", "/")}`;
 }
@@ -102,7 +110,7 @@ import { GhostLink, softwareSession, sessionPublicKey, derivePocket, signIntent,
   ApplicationRegistry, applicationRegistryDigest, OwnerConsentController, verifyTelegramOwnerInitData,
   prepareTelegramPairing, parseTelegramPairingCode, verifyTelegramPairingClaim,
   RelayerClient, prepareRelayerOperation, RelayerOperationPendingError, RelayerRequestError, prepareFundingTransaction,
-  claimMintFields, jsonRpcChainReader } from '@ghostlink/sdk';
+  claimMintFields, jsonRpcChainReader, requestLogin, listenForHandoffRequest, parseHandoffSignIn, handoffOrigin, HandoffError } from '@ghostlink/sdk';
 import { intentHash, conservativePolicy, policyHash, u64le, LOCALNET_DEPLOYMENT, PUBLIC_GENESIS_HASHES, parseDeployment, toBase58 } from '@ghostlink/common';
 const relayerOperation = prepareRelayerOperation('/snapshot', {wallet:'wallet',holding:'holding'});
 const relayerClient = new RelayerClient('https://relayer.invalid', async () => { throw new Error('synthetic offline'); });
@@ -149,7 +157,14 @@ assert.throws(() => prepareTelegramPairing('user=forged', '12345'));
 const code = 'GLP1.12345.42.' + 'ab'.repeat(32);
 assert.equal(parseTelegramPairingCode(code).userId, '42');
 assert.throws(() => verifyTelegramPairingClaim(code, '12345', { initData: 'user=forged', expiresAt: Math.floor(Date.now()/1000)+60 }));
-console.log('Installed SDK: ESM import, public delegation, real intent signature and exact funding validation verified. No network transaction sent.');
+// The identity handoff from the archive: refusals before any window opens, a blocked popup, an inert identity page.
+const blockedWindow = { location: { origin: 'https://site.example' }, open: () => null, addEventListener() {}, removeEventListener() {} };
+await assert.rejects(requestLogin({ identityOrigin: 'https://id.example', window: blockedWindow }), e => e instanceof HandoffError && e.code === 'popup_blocked');
+await assert.rejects(requestLogin({ identityOrigin: 'https://site.example', window: blockedWindow }), e => e instanceof HandoffError && e.code === 'invalid_request');
+assert.equal(listenForHandoffRequest({ window: { location: { origin: 'https://id.example' }, opener: null, addEventListener() {}, removeEventListener() {} }, onRequest() {} }).opened, false);
+assert.equal(parseHandoffSignIn({}), null);
+assert.equal(handoffOrigin('https://id.example/'), null);
+console.log('Installed SDK: ESM import, public delegation, real intent signature, exact funding validation and handoff refusals verified. No network transaction sent.');
 `);
   execFileSync(process.execPath, [join(consumer, "check.mjs")], { cwd: consumer, stdio: "inherit" });
   writeFileSync(join(consumer, "login.mjs"), `
@@ -398,12 +413,18 @@ const inWorker = (createWorker: () => WorkerLike): WorkerProver => createWorkerP
 const workerClient = (createWorker: () => WorkerLike) => GhostLink.init({ cluster: 'localnet', indexer: 'http://127.0.0.1:8787', prover: inWorker(createWorker) });
 const cancellable = (p: WorkerProver, signal: AbortSignal) => p.prove('login', {}, { signal }).finally(() => p.terminate());
 void workerClient; void cancellable;
+// A site signs in through an identity app (docs/IDENTITY-HANDOFF.md) with the button or the SDK call.
+import { requestLogin, type HandoffLogin, type HandoffSignInBody, type RequestLoginOptions } from '@ghostlink/sdk';
+import type { ContinueWithGhostLinkProps } from '@ghostlink/react';
+const handoffProps: ContinueWithGhostLinkProps = { identityOrigin: 'https://id.example', sessionSlots: 9_000n, onSignIn: async (login: HandoffLogin) => { const body: HandoffSignInBody = await login.signChallenge(new Uint8Array(32)); void body; } };
+const handoff = (options: RequestLoginOptions): Promise<HandoffLogin> => requestLogin(options);
+void handoffProps; void handoff;
 ${includeBot ? "import { BotOnboarding, type BotOnboardingOptions, type BotConsent, type BotIntentParams, type BotOrderStatus } from '@ghostlink/bot';\nconst initBot = (options: BotOnboardingOptions) => new BotOnboarding(options);\nconst prepare = (m: BotOnboarding, c: BotConsent, requestKey: string, params: BotIntentParams) => m.prepareIntent(c.id, c, { requestKey, params });\nconst status = (m: BotOnboarding, c: BotConsent, requestKey: string): BotOrderStatus => m.orderStatus(c.id, c, requestKey);\nvoid initBot; void prepare; void status;" : ""}
 `);
   // Every ```ts example in these documents must compile against the installed archives, so documented
   // flows cannot drift from the API. A document's examples form one program in order (later ones use what
   // earlier ones built); their `import { ... } from "..."` lines are merged at the top.
-  const snippetDocs = ["README.md", "packages/sdk/README.md", "packages/verify/README.md", "docs/INTEGRATIONS.md", "docs/OWNER-RECOVERY.md"];
+  const snippetDocs = ["README.md", "packages/sdk/README.md", "packages/verify/README.md", "docs/INTEGRATIONS.md", "docs/OWNER-RECOVERY.md", "docs/IDENTITY-HANDOFF.md"];
   const snippetFiles = [];
   for (const doc of snippetDocs) {
     const blocks = [...readFileSync(join(root, doc), "utf8").replace(/\r\n/g, "\n").matchAll(/^```ts\n([\s\S]*?)^```$/gm)].map(m => m[1]);
