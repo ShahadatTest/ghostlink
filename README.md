@@ -9,7 +9,7 @@
   <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue.svg"></a>
   <img alt="Solana · Anchor 0.32" src="https://img.shields.io/badge/Solana-Anchor%200.32-9945FF.svg">
   <img alt="Groth16 · circom" src="https://img.shields.io/badge/ZK-Groth16%20%C2%B7%20circom-111111.svg">
-  <img alt="Status: experimental" src="https://img.shields.io/badge/status-experimental%20%C2%B7%20test%20networks-orange.svg">
+  <img alt="Status: experimental" src="https://img.shields.io/badge/status-experimental%20%C2%B7%20local%20validator-orange.svg">
 </p>
 
 <p align="center">
@@ -37,11 +37,11 @@ Trading bots ask for your private key. "Connect wallet" logins tie your on-chain
 Proofs are Groth16 over BN254, generated on the user's device and verified **on-chain** by the Solana programs, or by your server for off-chain login.
 
 > [!WARNING]
-> **Experimental. Test networks only.** The proving keys come from a single-party development setup, and the code has not had an external security audit. Do not use real funds. See [project status](#project-status).
+> **Experimental. Not for real funds.** The code on `main` runs on a local validator today; it has no public devnet or mainnet deployment yet, and the SDK refuses other clusters. The proving keys come from a single-party development setup, and the code has not had an external security audit. See [project status](#project-status).
 
 ## Quickstart
 
-Verify a real zero-knowledge login proof in under a minute. You need Node 22 and pnpm (`corepack enable` installs the pinned version).
+Verify a real zero-knowledge login proof in under a minute. You need Node 22.16 or newer (or Node 24) and pnpm 10; `corepack enable` installs the pinned version. On Windows, if `corepack enable` fails with `EPERM`, run it once in an administrator terminal, or install pnpm with `npm install -g pnpm@10.33.2`.
 
 ```bash
 git clone https://github.com/Ghostlink-Labs/ghostlink.git
@@ -63,11 +63,13 @@ ok    built against an unknown tree              rejected: unknown registry root
 ok    tampered public signal                     rejected: proof failed verification
 ```
 
-Then try the [bot session example](examples/bot-session/src/index.ts) (`pnpm --filter @ghostlink/example-bot-session start`), or run **the whole system on a local validator** (Linux or WSL with the Solana toolchain, see [setup](docs/SETUP.md)):
+Then try the [bot session example](examples/bot-session/src/index.ts) (`pnpm --filter @ghostlink/example-bot-session start`), or run **the whole system on a local validator** (Linux or WSL with the Solana toolchain and circom, see [setup](docs/SETUP.md)). Proving needs circuit artifacts that are not committed, so build them first, on a scratch branch: that step creates throwaway proving keys and rewrites the committed verifying keys.
 
 ```bash
-bash scripts/build-programs.sh
-bash scripts/localnet-e2e.sh   # register → snapshot → consent → prove → open → fund → trade → recover
+bash scripts/build-circuits.sh   # circuit artifacts and throwaway development keys
+bash scripts/build-programs.sh   # the programs embed the new verifying keys
+pnpm -r build
+bash scripts/localnet-e2e.sh     # register → snapshot → consent → prove → open → fund → trade → recover
 ```
 
 ## Use it
@@ -100,7 +102,7 @@ if (nonce && result.ok && verifyLoginChallenge({ key32, nonce, signature })) {
 }
 ```
 
-The [`@ghostlink/verify` guide](packages/verify/README.md) covers the full flow, including passkey sessions.
+The [`@ghostlink/verify` guide](packages/verify/README.md) covers the full flow, including passkey sessions. `mintHi` and `mintLo` are the two halves of the mint address as decimal strings (`splitBytes32` in `@ghostlink/common`).
 
 ### Give a bot a budget, not your keys
 
@@ -121,6 +123,8 @@ const signed = await signIntent(pocket, bot, { nonce, inMint, inMax, outMint, ou
 ```
 
 The bot never sees the owner's identity secret, proof inputs or wallet key. [`@ghostlink/bot`](packages/bot/README.md) adds Telegram authentication, encrypted key storage, durable nonces and order recovery. Read the [integration guide](docs/INTEGRATIONS.md) for what an integration must still do itself.
+
+These snippets show the shape of the API, not a complete program. The one place every step runs end to end today, including creating the client, registering, building the witness and choosing a policy, is the local-validator journey in [`services/e2e/src/run.ts`](services/e2e/src/run.ts).
 
 ## How it works
 
@@ -164,11 +168,13 @@ The TypeScript encoders, Rust programs and circom circuits share one set of [tes
 | [`@ghostlink/react`](packages/react/) | `GhostLinkProvider`, `useGhostLink` and an unstyled `ContinueWithGhostLink` button |
 | [`@ghostlink/bot`](packages/bot/) | Node.js bot backend: Telegram authentication, owner consent, encrypted session keys and durable orders |
 | [`@ghostlink/common`](packages/common/) | Canonical encodings, Poseidon hashes, Merkle trees, PDAs and the cross-language vectors |
+| [`@ghostlink/service-kit`](services/shared/) | Instruction builders, account and event decoders and RPC failover, used by the bot backend and the services |
 
 The packages are not on npm yet. Build installable archives with checksums from source:
 
 ```bash
-pnpm pack:sdk && pnpm test:package   # writes artifacts/sdk/*.tgz and SHA256SUMS
+pnpm pack:sdk        # writes artifacts/sdk/*.tgz and SHA256SUMS
+pnpm test:package    # installs the archives into a clean project and checks them
 ```
 
 ## Project status

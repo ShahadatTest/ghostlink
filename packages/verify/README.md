@@ -69,6 +69,7 @@ It supports **Ed25519 session keys only**: the SDK's software sessions, which `c
 `verifyLogin` loads `keys/login_vk.json` from the installed package. A bundler or serverless build that leaves the file out makes every login fail with `login verifying key unavailable (server configuration)`, not a proof error. Call `bundledLoginVerificationKey()` at startup to fail fast, or import the key so your bundler includes it, and pass it explicitly:
 
 ```ts
+// TypeScript needs "resolveJsonModule": true for this import.
 import loginVk from "@ghostlink/verify/keys/login_vk.json" with { type: "json" };
 
 await verifyLogin({ ...request, verificationKey: loginVk });

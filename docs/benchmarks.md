@@ -1,12 +1,12 @@
 # Benchmarks
 
 Measured on the dev machine (Windows 11, WSL2 for chain-side work) during
-the v1 build. Phone numbers are the M1 gate's missing piece — measure on a
-mid-range Android and an iPhone before calling M1 done.
+the first build in October 2026. Phone measurements are still missing: a
+mid-range Android and an iPhone need measuring before any mainnet claim.
 
 ## Proving (snarkjs, dev zkeys)
 
-| Circuit | Constraints | This machine | Plan's target |
+| Circuit | Constraints | This machine | Target |
 | --- | --- | --- | --- |
 | `login` | 30,138 | ~1.7 s (Node 22) · **2.41 s in-browser** (Chromium, 20 cores, avg of 3) | 1–2 s laptop, 2–5 s phone |
 | `owner` | 15,248 | ~0.9 s (Node 22) | — |

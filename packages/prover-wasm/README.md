@@ -6,6 +6,8 @@ Device-side Groth16 prover for GhostLink. It downloads a circuit's WebAssembly w
 import { createProver } from "@ghostlink/prover-wasm";
 import { GhostLink } from "@ghostlink/sdk";
 
+// The .wasm and .zkey files come from `bash scripts/build-circuits.sh` in the
+// repository (circuits/build/). They are not published yet: host your own copies.
 const prover = createProver({
   login: {
     wasmUrl: "/circuits/login.wasm",
