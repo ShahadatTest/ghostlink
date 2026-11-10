@@ -269,6 +269,7 @@ The full checklist, with the evidence each gate needs, is in [mainnet readiness]
 | --- | --- |
 | [Setup](docs/SETUP.md) | Toolchain, building, testing and the local stack |
 | [Deployments](docs/DEPLOYMENTS.md) | Running GhostLink under your own program IDs, on a local validator, devnet or mainnet |
+| [Self-hosting](docs/SELF-HOSTING.md) | Running the five services for your deployment, from a fresh clone |
 | [Integration guide](docs/INTEGRATIONS.md) | What GhostLink guarantees, and what your integration must do |
 | [Threat model](docs/THREAT-MODEL.md) | Trust boundaries, assumptions and known limits |
 | [Owner consent](docs/OWNER-CONSENT.md) · [owner recovery](docs/OWNER-RECOVERY.md) | Approving bots, revoking them and getting funds back |

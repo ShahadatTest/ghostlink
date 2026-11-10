@@ -108,6 +108,20 @@ One mechanism everywhere: the path of the manifest file.
 | `@ghostlink/service-kit` | Reads `GHOSTLINK_DEPLOYMENT` once, at import; its instruction builders, PDAs and event decoder use the result for the life of the process. |
 | Local journey | `GHOSTLINK_DEPLOYMENT=<manifest.json> bash scripts/localnet-e2e.sh` (localnet manifests only). |
 
+To run all five services for a manifest as separate processes, with their state and keys outside the checkout, use `scripts/selfhost.sh`: see [self-hosting](SELF-HOSTING.md). `node scripts/deployment.mjs manifest` prints the built-in localnet deployment as a manifest file for a local validator running the default program build.
+
+### 6. Set the census snapshot fee
+
+Every census snapshot pays a fee, 100,000 lamports at first, into a vault the census program owns ([ADR 0005](adr/0005-census-spam-resistance.md)). The census program's upgrade authority, the payer of step 4 unless you transferred it, can change the fee and withdraw collected fees:
+
+```bash
+node scripts/deployment.mjs fee show ~/ghostlink-keys/my-devnet/manifest.json --url https://api.devnet.solana.com
+node scripts/deployment.mjs fee set ~/ghostlink-keys/my-devnet/manifest.json 0 --url https://api.devnet.solana.com \n  --authority ~/ghostlink-keys/my-devnet/payer.json --confirm devnet
+node scripts/deployment.mjs fee withdraw ~/ghostlink-keys/my-devnet/manifest.json all --to <address> \n  --url https://api.devnet.solana.com --authority ~/ghostlink-keys/my-devnet/payer.json --confirm devnet
+```
+
+The tool applies the deploy script's guards: the authority keypair must be outside the checkout and must be the census upgrade authority, the RPC's genesis must match the manifest, and on devnet and mainnet-beta it prints the plan and stops unless `--confirm <cluster>` is given. Withdrawals never take the vault below its rent-exempt minimum. A fee of zero removes the spam cost of snapshots: anyone can then grow the census tree, and every indexer's checkpoint, for network fees alone. Relayers refuse fees above their `RELAYER_MAX_SNAPSHOT_FEE_LAMPORTS` (default 1,000,000). An immutable census keeps its last fee and locks its vault. `bash scripts/test-census-fee.sh` exercises the tool against a local validator.
+
 A malformed manifest, an unreadable path or an empty `GHOSTLINK_DEPLOYMENT` stops the process with the reason. Unset, every component uses the built-in localnet deployment.
 
 ## What stays your responsibility
