@@ -99,7 +99,7 @@ import { GhostLink, softwareSession, sessionPublicKey, derivePocket, signIntent,
   ApplicationRegistry, applicationRegistryDigest, OwnerConsentController, verifyTelegramOwnerInitData,
   prepareTelegramPairing, parseTelegramPairingCode, verifyTelegramPairingClaim,
   RelayerClient, prepareRelayerOperation, RelayerOperationPendingError, prepareFundingTransaction } from '@ghostlink/sdk';
-import { intentHash, conservativePolicy, policyHash, u64le } from '@ghostlink/common';
+import { intentHash, conservativePolicy, policyHash, u64le, LOCALNET_DEPLOYMENT, PUBLIC_GENESIS_HASHES, parseDeployment, toBase58 } from '@ghostlink/common';
 const relayerOperation = prepareRelayerOperation('/snapshot', {wallet:'wallet',holding:'holding'});
 const relayerClient = new RelayerClient('https://relayer.invalid', async () => { throw new Error('synthetic offline'); });
 await assert.rejects(relayerClient.submit(relayerOperation), e => e instanceof RelayerOperationPendingError && e.operation.digestHex === relayerOperation.digestHex);
@@ -129,7 +129,11 @@ const key = createPublicKey({ format: 'der', type: 'spki', key: Buffer.concat([
 ]) });
 assert.equal(verify(null, intentHash(signed.intent), key, signed.signature.signature), true);
 assert.deepEqual(signed.intent.policyHash, policyHash(policy));
-await assert.rejects(GhostLink.init({ cluster: 'mainnet-beta', indexer: 'https://example.invalid' }), /no verified devnet or mainnet/);
+await assert.rejects(GhostLink.init({ cluster: 'mainnet-beta', indexer: 'https://example.invalid' }), /requires an explicit deployment manifest/);
+const ownDeployment = { ...LOCALNET_DEPLOYMENT, cluster: 'devnet', genesisHash: PUBLIC_GENESIS_HASHES.devnet,
+  registryProgram: toBase58(new Uint8Array(32).fill(1)), censusProgram: toBase58(new Uint8Array(32).fill(2)), pocketProgram: toBase58(new Uint8Array(32).fill(3)) };
+assert.deepEqual((await GhostLink.init({ cluster: 'devnet', deployment: ownDeployment, indexer: 'https://example.invalid' })).deployment, parseDeployment(ownDeployment));
+await assert.rejects(GhostLink.init({ cluster: 'devnet', deployment: { ...ownDeployment, pocketProgram: LOCALNET_DEPLOYMENT.pocketProgram }, indexer: 'https://example.invalid' }), /built-in program ID/);
 for (const api of [ApplicationRegistry, applicationRegistryDigest, OwnerConsentController, verifyTelegramOwnerInitData,
   prepareTelegramPairing, parseTelegramPairingCode, verifyTelegramPairingClaim]) assert.equal(typeof api, 'function');
 assert.throws(() => verifyTelegramOwnerInitData('user=forged', '12345'));

@@ -11,8 +11,10 @@
  * `wallet-standard:register-wallet` event) with no dependency on the
  * reference packages.
  */
-import { bytesToHex, loginChallengeDigest, pocketPda, toBase58 } from "@ghostlink/common";
-import type { GhostLinkSession } from "./ghostlink.js";
+import {
+  bytesToHex, loginChallengeDigest, parseDeployment, pk, pocketPda, toBase58, type Cluster, type DeploymentManifest,
+} from "@ghostlink/common";
+import { resolveDeployment, type GhostLinkSession } from "./ghostlink.js";
 import type { SessionKind, SessionSignature } from "./session.js";
 export { loginChallengeDigest };
 
@@ -36,11 +38,13 @@ export interface GhostLinkWalletOptions {
   /** Runs the GhostLink login flow and resolves with the session. */
   login: () => Promise<GhostLinkSession>;
   /**
-   * Chain advertised for the pocket account; defaults to "solana:localnet".
-   * Like `GhostLink.init`, other chains are refused until V2 has a
-   * verified devnet or mainnet deployment.
+   * Chain advertised for the pocket account; defaults to the deployment's
+   * chain ("solana:localnet" without one). Like `GhostLink.init`, devnet
+   * and mainnet need an explicit deployment manifest for that cluster.
    */
   chain?: "solana:mainnet" | "solana:devnet" | "solana:localnet";
+  /** The deployment the login's pocket belongs to; pass the one given to `GhostLink.init`. */
+  deployment?: DeploymentManifest;
   name?: string;
 }
 
@@ -87,10 +91,17 @@ export function signInOutputToDto(output: GhostLinkSignInOutput): GhostLinkSignI
 }
 
 /** Builds the wallet object; exported separately for tests. */
+const CHAIN_CLUSTERS: Record<string, Cluster> = { "solana:localnet": "localnet", "solana:devnet": "devnet", "solana:mainnet": "mainnet-beta" };
+const CLUSTER_CHAINS = { localnet: "solana:localnet", devnet: "solana:devnet", "mainnet-beta": "solana:mainnet" } as const;
+
 export function createGhostLinkWallet(options: GhostLinkWalletOptions) {
-  const chain = options.chain ?? "solana:localnet";
-  // Advertising devnet or mainnet would send dApps to a chain with no V2 pocket.
-  if (chain !== "solana:localnet") throw new Error("This V2 SDK has no verified devnet or mainnet deployment; use solana:localnet");
+  const chain = options.chain ?? (options.deployment === undefined ? "solana:localnet"
+    : CLUSTER_CHAINS[parseDeployment(options.deployment).cluster]);
+  const cluster = CHAIN_CLUSTERS[chain];
+  if (!cluster) throw new Error("unsupported wallet chain");
+  // Advertising a chain whose pocket program is not the deployment's would send dApps to the wrong account.
+  const deployment = resolveDeployment(cluster, options.deployment);
+  const pocketProgram = pk(deployment.pocketProgram);
   let accounts: WalletStandardAccount[] = [];
   let connecting: Promise<GhostLinkSession> | undefined;
   const listeners = new Map<string, Set<(...args: unknown[]) => void>>();
@@ -100,7 +111,7 @@ export function createGhostLinkWallet(options: GhostLinkWalletOptions) {
   }
 
   function accountFor(session: GhostLinkSession): WalletStandardAccount {
-    const pocket = pocketPda(session.appId).address;
+    const pocket = pocketPda(session.appId, pocketProgram).address;
     return { address: toBase58(pocket), publicKey: pocket, chains: [chain], features: ["ghostlink:signIn"] };
   }
 

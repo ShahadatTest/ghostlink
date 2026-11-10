@@ -12,11 +12,11 @@ const vectors = JSON.parse(readFileSync(new URL("../../common/fixtures/vectors.j
 const fixture = JSON.parse(readFileSync(new URL("../../../circuits/keys/login_offchain_proof.json", import.meta.url), "utf8"));
 
 describe("wallet standard", () => {
-  it("advertises localnet by default and refuses chains without a V2 deployment", () => {
+  it("advertises localnet by default and refuses public chains without a deployment manifest", () => {
     const login = async () => { throw new Error("not called"); };
     expect(createGhostLinkWallet({ login }).chains).toEqual(["solana:localnet"]);
     for (const chain of ["solana:devnet", "solana:mainnet"] as const) {
-      expect(() => createGhostLinkWallet({ login, chain })).toThrow(/use solana:localnet/);
+      expect(() => createGhostLinkWallet({ login, chain })).toThrow(/requires an explicit deployment manifest/);
     }
   });
 

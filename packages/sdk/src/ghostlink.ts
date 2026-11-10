@@ -5,7 +5,9 @@
  */
 import {
   Cluster,
+  DeploymentError,
   FIELD_PRIME,
+  LOCALNET_DEPLOYMENT,
   FieldElement,
   IncrementalTree,
   Policy,
@@ -16,11 +18,14 @@ import {
   hexToBytes,
   homeHash,
   intentHash,
+  parseDeployment,
   pocketAuthorizationContext,
   relayerRequestDigest,
+  sessionDeployment,
   splitBytes32,
   toBase58,
   type CensusLatestResponse,
+  type DeploymentManifest,
   type IntentRequest,
   type IntentSubmission,
   type LeavesResponse,
@@ -56,8 +61,16 @@ import { RelayerClient, RelayerOperationFailedError, RelayerOperationPendingErro
 import { unboundFetch } from "./transport.js";
 
 export interface GhostLinkConfig {
-  /** V2 is localnet-only until a fresh deployment and migration are verified. */
+  /** Must equal `deployment.cluster` when a deployment is given. */
   cluster: Cluster;
+  /**
+   * The deployment manifest (docs/DEPLOYMENTS.md) whose programs this
+   * client derives pockets and authorizations for. Optional on localnet,
+   * where the built-in `LOCALNET_DEPLOYMENT` is the default. Required on
+   * devnet and mainnet-beta: the built-in program IDs are the preserved V1
+   * deployment there, so a public manifest must name its own.
+   */
+  deployment?: DeploymentManifest;
   indexer: string;
   relayer?: string;
   solver?: string;
@@ -120,20 +133,37 @@ export class WitnessPendingError extends Error {
   }
 }
 
+/**
+ * The deployment a client for `cluster` uses: the built-in one on localnet
+ * when none is given, otherwise the validated manifest. Throws
+ * `DeploymentError`. The SDK has no RPC of its own: services and the owner
+ * consent controller check the chain's genesis against it.
+ */
+export function resolveDeployment(cluster: Cluster, deployment?: unknown): Readonly<DeploymentManifest> {
+  if (deployment === undefined) {
+    if (cluster === "localnet") return LOCALNET_DEPLOYMENT;
+    throw new DeploymentError(`${String(cluster)} requires an explicit deployment manifest: the built-in program IDs ` +
+      "are the preserved V1 deployment on public networks (docs/DEPLOYMENTS.md)");
+  }
+  const parsed = parseDeployment(deployment);
+  if (parsed.cluster !== cluster) throw new DeploymentError(`the deployment manifest is for ${parsed.cluster}, not ${String(cluster)}`);
+  return parsed;
+}
+
 export class GhostLink {
   readonly config: GhostLinkConfig;
+  /** The validated deployment every address and authorization is derived for. */
+  readonly deployment: Readonly<DeploymentManifest>;
   private readonly fetchFn: typeof fetch;
 
-  private constructor(config: GhostLinkConfig) {
+  private constructor(config: GhostLinkConfig, deployment: Readonly<DeploymentManifest>) {
     this.config = config;
+    this.deployment = deployment;
     this.fetchFn = unboundFetch(config.fetchFn);
   }
 
   static async init(config: GhostLinkConfig): Promise<GhostLink> {
-    if (config.cluster !== "localnet") {
-      throw new Error("This V2 SDK has no verified devnet or mainnet deployment; use localnet");
-    }
-    return new GhostLink(config);
+    return new GhostLink(config, resolveDeployment(config.cluster, config.deployment));
   }
 
   /** Origin used by this facade; callers holding the secret still control it. */
@@ -347,6 +377,7 @@ export class GhostLink {
       witness: params.witness,
       policy: params.policy,
       authorizationEpoch: params.authorizationEpoch,
+      deployment: sessionDeployment(this.deployment),
     });
     const proof = await proveLogin(this.config.prover, input, appId);
     return {
@@ -362,14 +393,15 @@ export class GhostLink {
   // ---- pocket -------------------------------------------------------------
 
   pocketFor(session: GhostLinkAuthorization, home: Uint8Array, policy?: Policy): PocketHandle {
-    const pocket = derivePocket(session.appId, home, policy ?? conservativePolicy());
+    const pocket = derivePocket(session.appId, home, policy ?? conservativePolicy(), this.deployment);
     this.checkPocketAuthorization(session, pocket);
     return pocket;
   }
 
   private checkPocketAuthorization(session: GhostLinkAuthorization, pocket: PocketHandle): void {
     const signals = session.proof.publicSignals;
-    const context = pocketAuthorizationContext(pocket.policy, session.signer.kind, undefined, session.authorizationEpoch ?? 0n);
+    const context = pocketAuthorizationContext(pocket.policy, session.signer.kind, sessionDeployment(this.deployment),
+      session.authorizationEpoch ?? 0n);
     if (signals.length !== 12 || fieldFromDecimal(signals[11]) !== context
       || fieldFromDecimal(signals[9]) !== homeHash(pocket.home)
       || fieldFromDecimal(signals[3]) !== session.appId || pocket.appId !== session.appId) {
@@ -379,7 +411,7 @@ export class GhostLink {
 
   funding(pocket: PocketHandle): FundingOptions {
     if (!this.config.actions) throw new Error("no actions endpoint configured");
-    return fundingOptions(pocket, this.config.actions);
+    return fundingOptions(pocket, this.config.actions, this.deployment);
   }
 
   /**

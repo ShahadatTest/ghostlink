@@ -100,10 +100,10 @@ describe("public bot session authorization", () => {
   });
 });
 
-it("refuses undeployed V2 networks before using old deployment IDs or contacting services", async () => {
+it("refuses public networks without a deployment manifest before using old deployment IDs or contacting services", async () => {
   const fetchFn = vi.fn();
-  await expect(GhostLink.init({ cluster: "mainnet-beta", indexer: "https://indexer.test", fetchFn })).rejects.toThrow(/no verified devnet or mainnet/);
-  await expect(GhostLink.init({ cluster: "devnet", indexer: "https://indexer.test", fetchFn })).rejects.toThrow(/no verified devnet or mainnet/);
+  await expect(GhostLink.init({ cluster: "mainnet-beta", indexer: "https://indexer.test", fetchFn })).rejects.toThrow(/requires an explicit deployment manifest/);
+  await expect(GhostLink.init({ cluster: "devnet", indexer: "https://indexer.test", fetchFn })).rejects.toThrow(/requires an explicit deployment manifest/);
   expect(fetchFn).not.toHaveBeenCalled();
   await expect(GhostLink.init({ cluster: "localnet", indexer: "http://localhost:8787" })).resolves.toBeInstanceOf(GhostLink);
 });

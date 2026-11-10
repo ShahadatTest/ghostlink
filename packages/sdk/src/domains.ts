@@ -5,7 +5,8 @@
  * the web can pass localStorage. The list contains no identity secrets,
  * but it does reveal visited app origins; treat it as browsing history.
  */
-import { FieldElement, appId, domainHash, pocketPda } from "@ghostlink/common";
+import { FieldElement, LOCALNET_DEPLOYMENT, appId, domainHash, pk, pocketPda } from "@ghostlink/common";
+import type { PocketDeployment } from "./pocket.js";
 
 export interface DomainStore {
   load(): string[];
@@ -56,9 +57,11 @@ export interface RecoveredPocket {
 }
 
 /** Re-derives every known app identity and pocket from the secret. */
-export function recoverPockets(sField: FieldElement, origins: string[]): RecoveredPocket[] {
+export function recoverPockets(sField: FieldElement, origins: string[],
+  deployment: PocketDeployment = LOCALNET_DEPLOYMENT): RecoveredPocket[] {
+  const program = pk(deployment.pocketProgram);
   return origins.map((origin) => {
     const id = appId(sField, domainHash(origin));
-    return { origin, appId: id, pocketAddress: pocketPda(id).address };
+    return { origin, appId: id, pocketAddress: pocketPda(id, program).address };
   });
 }

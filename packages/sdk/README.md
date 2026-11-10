@@ -1,6 +1,6 @@
 # GhostLink SDK
 
-Experimental TypeScript/JavaScript SDK for Solana identity proofs and policy-controlled pockets. Node.js bot backends and browser applications can use the same intent format. **V2 candidate: localnet only; not deployed.** This is not an integration with any named trading bot, and installing it does not grant a bot permission to trade.
+Experimental TypeScript/JavaScript SDK for Solana identity proofs and policy-controlled pockets. Node.js bot backends and browser applications can use the same intent format. **V2 candidate: no official public deployment.** It runs on a local validator by default, and on devnet or mainnet only against a [deployment](../../docs/DEPLOYMENTS.md) you create and pass as a manifest. This is not an integration with any named trading bot, and installing it does not grant a bot permission to trade.
 
 For Telegram backend authentication, encrypted session storage and confirmed consent checks, see the separate [`@ghostlink/bot` package](../bot/README.md). It uses this SDK without sharing owner identity secrets with the bot.
 
@@ -135,7 +135,7 @@ await client.openSession(authorization, pocket, {
 });
 ```
 
-Here `client` is a GhostLink client initialized with `cluster: "localnet"` with a local prover and trusted service endpoints. Its optional `fetchFn` can be any fetch, including the browser's `window.fetch`; the SDK calls it without a receiver. `identity` and `witness` stay on the user's trusted device. They must not be requested by a bot backend. This API supplies the proof/key boundary; it does **not** supply the hosted handoff, consent UI, Telegram authentication, or isolated origin-enforcing identity broker.
+Here `client` is a GhostLink client initialized with `cluster: "localnet"` (or a public cluster with `deployment: manifest`) with a local prover and trusted service endpoints. Its optional `fetchFn` can be any fetch, including the browser's `window.fetch`; the SDK calls it without a receiver. `identity` and `witness` stay on the user's trusted device. They must not be requested by a bot backend. This API supplies the proof/key boundary; it does **not** supply the hosted handoff, consent UI, Telegram authentication, or isolated origin-enforcing identity broker.
 
 `authorizeSession` requires an explicit `home` and `policy`. The program rebuilds the proof's public inputs from the `openSession` request, so `openSession` refuses claim fields, roots, a domain hash, session key or expiry that differ from the proved values before it contacts the relayer. It throws `RelayerOperationPendingError` while the outcome is unknown and `RelayerOperationFailedError` after a final on-chain failure (see [Durable relayer requests](#durable-relayer-requests)).
 
@@ -158,7 +158,7 @@ Witnesses come from completed root buckets. The programs keep one root per 150-s
 
 ## Wallet Standard sign-in
 
-`registerGhostLinkWallet({ login })` announces a wallet with `standard:connect`, `standard:events` and a custom `ghostlink:signIn` feature. It has no transaction signing. It advertises `solana:localnet` by default and, like `GhostLink.init`, refuses other chains until V2 has a verified deployment.
+`registerGhostLinkWallet({ login })` announces a wallet with `standard:connect`, `standard:events` and a custom `ghostlink:signIn` feature. It has no transaction signing. It advertises the chain of its `deployment` option (`solana:localnet` without one) and, like `GhostLink.init`, refuses devnet and mainnet without a deployment manifest for that cluster.
 
 The `ghostlink:signIn` output contains byte arrays and a `bigint` expiry, so `JSON.stringify` throws on it. Send `signInOutputToDto(output)` (hex bytes, decimal expiry) to your backend. There, decode it, verify the proof with `@ghostlink/verify`, and verify the challenge signature over `loginChallengeDigest(challenge)` before consuming the challenge.
 
@@ -170,7 +170,7 @@ The `ghostlink:signIn` output contains byte arrays and a `bigint` expiry, so `JS
 import { prepareFundingTransaction } from '@ghostlink/sdk';
 import { pk } from '@ghostlink/common';
 
-// rpc is independently configured and its genesis matches your approved localnet.
+// rpc is independently configured and its genesis matches your approved deployment.
 // Check the response's x-blockchain-ids against that genesis, and independently
 // read the confirmed PocketV3 account, mint and associated token accounts first.
 const blockhash = await rpc.getLatestBlockhash('confirmed');
@@ -179,6 +179,7 @@ const checkedBytes = prepareFundingTransaction(decodedTransactionBytes, {
   funder: fundingWalletPublicKeyBytes,
   asset: { kind: 'spl', mint: approvedMintBytes, rawAmount: 25_000_000n },
   recentBlockhash: pk(blockhash.blockhash),
+  deployment: manifest, // omit for the built-in localnet deployment
 });
 // For native SOL: asset: { kind: 'sol', lamports: 1_000_000n }.
 // Estimate the fee and any ATA creation rent, show the complete debit for consent,
@@ -188,13 +189,13 @@ const checkedBytes = prepareFundingTransaction(decodedTransactionBytes, {
 
 The helper accepts exactly an unsigned legacy SOL transfer to the derived pocket, or idempotent creation of its classic SPL associated token account followed by an exact token transfer from the funder's associated account. It checks the fee payer, sole signer, every account and permission, instruction order and raw integer amount. Extra instructions (including priority-fee changes, tips, approvals and memos), signatures, versioned transactions and Token-2022 are refused. It returns a detached copy with the trusted blockhash substituted and does not require web3.js or Node globals at runtime. It never signs, broadcasts or confirms a transaction.
 
-This is structural validation. A transaction does not encode the RPC genesis, account state, rent or current network fee. Confirm those independently, display SOL fees/rent as well as the token amount, and follow the original signature after an uncertain submission. A SOL deposit is not automatically wrapped for a swap. V2 remains localnet only; see [Actions operations](../../docs/ACTIONS-OPERATIONS.md) and [Solana's client responsibilities](https://solana.com/docs/tools/actions#post-response---transaction).
+This is structural validation. A transaction does not encode the RPC genesis, account state, rent or current network fee. Confirm those independently, display SOL fees/rent as well as the token amount, and follow the original signature after an uncertain submission. A SOL deposit is not automatically wrapped for a swap. See [Actions operations](../../docs/ACTIONS-OPERATIONS.md) and [Solana's client responsibilities](https://solana.com/docs/tools/actions#post-response---transaction).
 
 ## Current limits
 
 Trade submission returns explicit states. Inspect `tx.state`; `pending`, `preparing` and `unknown` are not successful settlement. Persist a signed intent before sending with `client.submitSignedIntent(signed, publicSession)`, and poll with `client.intentStatus(intentHashHex)` after a timeout. Retrying the identical intent reuses the solver's persisted transaction. Never allocate a fresh nonce simply because an HTTP call failed. See [the recovery contract](../../docs/TRANSACTION-RECOVERY.md).
 
-- The facade refuses devnet and mainnet because V2 has no verified live deployment. The existing devnet app uses the preserved V1 deployment. This is a configuration guard, not an RPC genesis check or a sandbox around low-level functions.
+- The facade refuses devnet and mainnet without a [deployment manifest](../../docs/DEPLOYMENTS.md) for that cluster, and refuses manifests that reuse the built-in program IDs there: on devnet those are the preserved V1 deployment. The SDK has no RPC of its own, so this is a configuration guard, not an RPC genesis check or a sandbox around low-level functions; check the genesis with `assertDeploymentGenesis` from `@ghostlink/common`.
 - Only classic SPL Token swaps are supported. Token-2022 transfers and native SOL swap legs need explicit implementations.
 - Priced trades require pinned fresh feeds. The local PocketV3 candidate supports explicitly approved, bounded unpriced buys and tracked exits to their original base; see [the policy and limitations](../../docs/adr/0004-bounded-speculative-trading.md). This does not certify production sniper-bot compatibility.
 - One active session key exists per pocket. A new session replaces the previous one. One bot cannot independently revoke another key in the same pocket because multiple concurrent delegations are not implemented.

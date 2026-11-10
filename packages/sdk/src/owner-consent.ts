@@ -1,6 +1,6 @@
 import bs58 from "bs58";
 import {
-  appId, domainHash, FIELD_PRIME, fieldToBytes32, hexToBytes, pocketPda, toBase58,
+  appId, domainHash, FIELD_PRIME, fieldToBytes32, hexToBytes, pk, pocketPda, sessionDeployment, toBase58,
   type BotConsent, type BotDeployment,
 } from "@ghostlink/common";
 import {
@@ -130,7 +130,9 @@ export class OwnerConsentController {
     if (c.version !== 1 || typeof c.id !== "string" || !/^[0-9a-f]{64}$/.test(c.id) ||
       c.botId !== application.telegramBotId || c.userId !== userId || c.appOrigin !== application.appOrigin ||
       c.appId !== id || c.home !== home || c.sessionExpirySlot !== expiry ||
-      c.pocket !== toBase58(pocketPda(BigInt(id)).address)) throw new Error("consent does not match owner request");
+      c.pocket !== toBase58(pocketPda(BigInt(id), pk(manifest.deployment.pocketProgram)).address)) {
+      throw new Error("consent does not match owner request");
+    }
     const deployment = canonicalBotDeployment(c.deployment), policy = canonicalConsentPolicy(c.policy);
     if (consentDigest(deployment) !== consentDigest(manifest.deployment) || consentDigest(policy) !== consentDigest(application.policy)) {
       throw new Error("consent deployment or policy is not approved");
@@ -179,10 +181,8 @@ export class OwnerConsentController {
       this.#current(review, record, "proving");
       const session = sessionPublicKey(0, hexToBytes(c.sessionKeyHex));
       const built = buildLoginInput({ identity, witness, claim, minSlot, currentSlot: slot, session, expirySlot,
-        origin: c.appOrigin, home: bs58.decode(c.home), policy: policyFromDto(c.policy), authorizationEpoch, deployment: {
-          pocketProgram: bs58.decode(c.deployment.pocketProgram), registryProgram: bs58.decode(c.deployment.registryProgram),
-          censusProgram: bs58.decode(c.deployment.censusProgram),
-        } });
+        origin: c.appOrigin, home: bs58.decode(c.home), policy: policyFromDto(c.policy), authorizationEpoch,
+        deployment: sessionDeployment(c.deployment) });
       if (built.appId.toString() !== c.appId) throw new Error("owner identity changed after review");
       const expectedSignals = PUBLIC_SIGNALS.map(k => built.input[k]);
       const proof = structuredClone(await proveLogin(prover, built.input, built.appId));

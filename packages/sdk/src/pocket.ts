@@ -14,11 +14,14 @@ import {
   bytesToHex,
   conservativePolicy,
   fieldToBytes32,
+  LOCALNET_DEPLOYMENT,
   intentHash,
+  pk,
   policyHash,
   pocketPda,
   toBase58,
   u64le,
+  type DeploymentManifest,
 } from "@ghostlink/common";
 import type { SessionSigner, SessionSignature } from "./session.js";
 
@@ -29,10 +32,14 @@ export interface PocketHandle {
   home: Uint8Array;
 }
 
-export function derivePocket(appId: FieldElement, home: Uint8Array, policy?: Policy): PocketHandle {
+/** The deployment whose pocket program owns the address; the built-in localnet one by default. */
+export type PocketDeployment = Pick<DeploymentManifest, "pocketProgram">;
+
+export function derivePocket(appId: FieldElement, home: Uint8Array, policy?: Policy,
+  deployment: PocketDeployment = LOCALNET_DEPLOYMENT): PocketHandle {
   return {
     appId,
-    address: pocketPda(appId).address,
+    address: pocketPda(appId, pk(deployment.pocketProgram)).address,
     policy: policy ?? conservativePolicy(),
     home,
   };
@@ -47,8 +54,9 @@ export interface FundingOptions {
   address: string;
 }
 
-export function fundingOptions(pocket: PocketHandle, actionsBase: string): FundingOptions {
-  const address = toBase58(pocketPda(pocket.appId).address);
+export function fundingOptions(pocket: PocketHandle, actionsBase: string,
+  deployment: PocketDeployment = LOCALNET_DEPLOYMENT): FundingOptions {
+  const address = toBase58(pocketPda(pocket.appId, pk(deployment.pocketProgram)).address);
   if (toBase58(pocket.address) !== address) throw new Error("pocket address does not match app id");
   const appIdHex = bytesToHex(fieldToBytes32(pocket.appId));
   const blinkUrl = `${actionsBase.replace(/\/$/, "")}/actions/fund/${appIdHex}`;

@@ -1,6 +1,7 @@
 import {
-  type FieldElement, findProgramAddress, pk, pocketPda, SPL_TOKEN_PROGRAM_ID, toBase58, u64le,
+  type FieldElement, findProgramAddress, LOCALNET_DEPLOYMENT, pk, pocketPda, SPL_TOKEN_PROGRAM_ID, toBase58, u64le,
 } from "@ghostlink/common";
+import type { PocketDeployment } from "./pocket.js";
 
 export type FundingAsset =
   | { kind: "sol"; lamports: bigint }
@@ -13,6 +14,8 @@ export interface FundingApproval {
   asset: FundingAsset;
   /** Fresh blockhash from an independently trusted, genesis-checked RPC. */
   recentBlockhash: Uint8Array;
+  /** The approved deployment whose pocket receives the deposit; the built-in localnet one by default. */
+  deployment?: PocketDeployment;
 }
 
 const SYSTEM = new Uint8Array(32);
@@ -34,7 +37,7 @@ function key(value: Uint8Array): Uint8Array {
  * trade. The caller must check the RPC genesis, confirmed PocketV3/mint/accounts,
  * chain header, transaction fee and possible ATA rent, and show them for consent.
  * Sign only the returned bytes; do not append instructions. This function never
- * calls a wallet, signs, sends, or confirms a transaction. V2 remains localnet only.
+ * calls a wallet, signs, sends, or confirms a transaction.
  */
 export function prepareFundingTransaction(transaction: Uint8Array, approval: FundingApproval): Uint8Array {
   if (!(transaction instanceof Uint8Array) || transaction.length > 1232) throw new Error("invalid funding transaction size");
@@ -42,7 +45,7 @@ export function prepareFundingTransaction(transaction: Uint8Array, approval: Fun
   const bytes = Uint8Array.from(transaction);
   const funder = key(approval.funder), blockhash = key(approval.recentBlockhash);
   if (!blockhash.some(b => b !== 0)) throw new Error("invalid funding blockhash");
-  const pocket = pocketPda(approval.appId).address;
+  const pocket = pocketPda(approval.appId, pk((approval.deployment ?? LOCALNET_DEPLOYMENT).pocketProgram)).address;
   const asset = approval.asset;
   if (asset.kind !== "sol" && asset.kind !== "spl") throw new Error("unsupported funding asset");
   const amount = asset.kind === "sol" ? asset.lamports : asset.rawAmount;

@@ -1,8 +1,7 @@
 import { sha256 } from "@noble/hashes/sha256";
 import bs58 from "bs58";
 import {
-  bytesToHex, policyHash, CENSUS_PROGRAM_ID, POCKET_PROGRAM_ID, REGISTRY_PROGRAM_ID,
-  type BotDeployment, type PolicyDto,
+  bytesToHex, checkBotDeployment, policyHash, type BotDeployment, type PolicyDto,
 } from "@ghostlink/common";
 import { policyFromDto, policyToDto } from "./ghostlink.js";
 
@@ -107,14 +106,15 @@ export function canonicalConsentPolicy(raw: unknown): PolicyDto {
   return JSON.parse(JSON.stringify(policyToDto(policy))) as PolicyDto;
 }
 
+/**
+ * The deployment rule of `@ghostlink/common` (`checkBotDeployment`): a local
+ * validator, or a public cluster's own genesis with program IDs that are not
+ * the built-in (V1-on-devnet) ones.
+ */
 export function canonicalBotDeployment(raw: unknown): BotDeployment {
   const d = consentObject(raw, ["cluster", "genesisHash", "pocketProgram", "registryProgram", "censusProgram"]);
   for (const k of ["genesisHash", "pocketProgram", "registryProgram", "censusProgram"]) consentAddress(d[k]);
-  if (d.cluster !== "localnet" || d.pocketProgram !== POCKET_PROGRAM_ID || d.registryProgram !== REGISTRY_PROGRAM_ID ||
-    d.censusProgram !== CENSUS_PROGRAM_ID || ["5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d", "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG"].includes(d.genesisHash)) {
-    throw new Error("no verified public-network owner deployment");
-  }
-  return { ...d } as BotDeployment;
+  return checkBotDeployment(d);
 }
 
 function manifest(raw: unknown): ApplicationManifest {
