@@ -15,11 +15,13 @@
  * A proof is not a password: without `expect.session` any copy of it
  * logs in until its roots fall out of the ring. Set it, and have the
  * client additionally sign a nonce you issued with the session key.
+ *
+ * Loading this module needs no Node.js built-in: the verifying key is
+ * compiled in (./login-vk.js) and snarkjs is imported on first use.
  */
-import * as snarkjs from "snarkjs";
 export { loginChallengeDigest } from "@ghostlink/common";
-import { createRequire } from "node:module";
 import { ed25519 } from "@noble/curves/ed25519";
+import { LOGIN_VERIFICATION_KEY } from "./login-vk.js";
 import {
   FIELD_PRIME,
   domainHash,
@@ -80,8 +82,7 @@ export interface VerifyLoginParams {
   /**
    * The login verifying key. Defaults to the key bundled with this
    * package (`bundledLoginVerificationKey()`); pass your own when you
-   * verify against a different circuit build on purpose, or when your
-   * bundler cannot ship `keys/login_vk.json` next to the code.
+   * verify against a different circuit build on purpose.
    */
   verificationKey?: object;
   /**
@@ -269,8 +270,8 @@ async function verifyLoginChecked(params: VerifyLoginParams): Promise<VerifyLogi
     }
   }
 
-  // 5. The proof itself. A missing key is the server's fault, not the
-  // proof's: bundlers and serverless builds can drop keys/login_vk.json.
+  // 5. The proof itself. A missing key, or a runtime that cannot run the
+  // verifier, is the server's fault, not the proof's.
   let vk: unknown;
   try {
     vk = params.verificationKey ?? bundledLoginVerificationKey();
@@ -280,13 +281,27 @@ async function verifyLoginChecked(params: VerifyLoginParams): Promise<VerifyLogi
   if (typeof vk !== "object" || vk === null) {
     return {
       ok: false,
-      reason: "login verifying key unavailable (server configuration): deploy keys/login_vk.json with @ghostlink/verify or pass verificationKey",
+      reason: "login verifying key unavailable (server configuration): pass verificationKey as a parsed key object, or reinstall @ghostlink/verify",
     };
+  }
+  const wasm = (globalThis as { WebAssembly?: { CompileError: new () => Error } }).WebAssembly;
+  if (typeof wasm !== "object") return verifierUnavailable("this runtime has no WebAssembly");
+  let groth16: Groth16;
+  try {
+    groth16 = await loadGroth16();
+  } catch (e) {
+    return verifierUnavailable(`snarkjs failed to load: ${errorMessage(e)}`);
   }
   let valid = false;
   try {
-    valid = await snarkjs.groth16.verify(vk, params.publicSignals, params.proof);
-  } catch {
+    valid = await groth16.verify(vk, params.publicSignals, params.proof);
+  } catch (e) {
+    // snarkjs compiles its curve arithmetic to WebAssembly at run time.
+    // Edge runtimes (Vercel Edge, Cloudflare Workers) forbid that. No proof
+    // can cause these errors, so they must not be reported as a bad proof.
+    if (e instanceof wasm.CompileError || e instanceof EvalError) {
+      return verifierUnavailable(errorMessage(e));
+    }
     return { ok: false, reason: "proof is malformed" };
   }
   if (!valid) return { ok: false, reason: "proof failed verification" };
@@ -332,19 +347,43 @@ export function verifyLoginChallenge(input: LoginChallengeSignature): boolean {
   }
 }
 
-let bundledKey: object | undefined;
-
 /**
- * The login verifying key shipped with this package (keys/login_vk.json).
- * Throws if a bundler or deployment left the file out; call it at startup
- * to fail fast instead of on the first login.
+ * The login verifying key shipped with this package, identical to
+ * keys/login_vk.json. It is compiled into the module, so a bundler cannot
+ * leave it out; this throws only if the build itself is broken.
  */
 export function bundledLoginVerificationKey(): object {
-  if (!bundledKey) {
-    const require = createRequire(import.meta.url);
-    bundledKey = require("../keys/login_vk.json") as object;
-  }
-  return bundledKey;
+  const key: unknown = LOGIN_VERIFICATION_KEY;
+  if (typeof key !== "object" || key === null) throw new Error("bundled login_vk is missing from this build");
+  return key;
+}
+
+type Groth16 = { verify(vk: object, publicSignals: string[], proof: object): Promise<boolean> };
+let groth16Load: Promise<Groth16> | undefined;
+
+/**
+ * snarkjs is large, needs WebAssembly and touches browser or Node APIs as
+ * it loads, so it is imported on the first proof check rather than with
+ * this module. A failed import is retried on the next call.
+ */
+function loadGroth16(): Promise<Groth16> {
+  groth16Load ??= import("snarkjs").then(
+    (m) => m.groth16,
+    (e: unknown) => {
+      groth16Load = undefined;
+      throw e;
+    },
+  );
+  return groth16Load;
+}
+
+const errorMessage = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+function verifierUnavailable(detail: string): VerifyLoginResult {
+  return {
+    ok: false,
+    reason: `proof verifier unavailable on this runtime (server configuration): ${detail}. Run verifyLogin in a Node.js runtime`,
+  };
 }
 
 async function fetchRoots(

@@ -95,10 +95,8 @@ describe.skipIf(!built)("verifyLogin", () => {
   });
 
   it("blames server configuration, not the proof, when the verifying key cannot be loaded", async () => {
-    // As if a bundler or serverless build had dropped keys/login_vk.json.
-    vi.doMock("node:module", () => ({
-      createRequire: () => () => { throw new Error("Cannot find module '../keys/login_vk.json'"); },
-    }));
+    // As if a broken build had produced no key; a wrong key type is the caller's version of it.
+    vi.doMock("../src/login-vk.js", () => ({ LOGIN_VERIFICATION_KEY: undefined }));
     vi.resetModules();
     try {
       const fresh = await import("../src/index.js");
@@ -112,9 +110,52 @@ describe.skipIf(!built)("verifyLogin", () => {
       const verificationKey = JSON.parse(readFileSync(vkPath, "utf8"));
       expect(await fresh.verifyLogin({ ...base(), verificationKey })).toMatchObject({ ok: true });
     } finally {
-      vi.doUnmock("node:module");
+      vi.doUnmock("../src/login-vk.js");
       vi.resetModules();
     }
+  });
+
+  it("loads without snarkjs and blames the server when snarkjs cannot load", async () => {
+    // snarkjs is imported on first use, so the module, the challenge check and
+    // every refusal before the proof check work wherever snarkjs cannot load.
+    vi.doMock("snarkjs", () => { throw new Error("URL.createObjectURL is not a function"); });
+    vi.resetModules();
+    try {
+      const fresh = await import("../src/index.js");
+      expect(await fresh.verifyLogin({ ...base(), expectedDomain: "https://other.example" }))
+        .toEqual({ ok: false, reason: "proof bound to a different domain" });
+      const res = await fresh.verifyLogin(base());
+      expect(res.ok).toBe(false);
+      expect(res.reason).toMatch(/^proof verifier unavailable on this runtime \(server configuration\): snarkjs failed to load: /);
+      vi.doUnmock("snarkjs");
+      // A failed import is not cached: the next call loads snarkjs and verifies.
+      expect(await fresh.verifyLogin(base())).toMatchObject({ ok: true });
+    } finally {
+      vi.doUnmock("snarkjs");
+      vi.resetModules();
+    }
+  });
+
+  it("reports a runtime that forbids compiling WebAssembly as server configuration", async () => {
+    // Vercel Edge and Cloudflare Workers refuse WebAssembly.compile on bytes,
+    // which snarkjs needs to build its curve. Drop the cached curve so that
+    // snarkjs builds a new one under that restriction.
+    const global = globalThis as { curve_bn128?: unknown };
+    const cached = global.curve_bn128;
+    global.curve_bn128 = null;
+    const compile = vi.spyOn(WebAssembly, "compile").mockRejectedValue(
+      new WebAssembly.CompileError("WebAssembly.compile(): Wasm code generation disallowed by embedder"),
+    );
+    try {
+      const res = await verifyLogin(base());
+      expect(compile).toHaveBeenCalled();
+      expect(res.ok).toBe(false);
+      expect(res.reason).toMatch(/^proof verifier unavailable on this runtime \(server configuration\): .*disallowed by embedder/);
+    } finally {
+      compile.mockRestore();
+      global.curve_bn128 = cached;
+    }
+    expect(await verifyLogin(base())).toMatchObject({ ok: true });
   });
 
   it("verifies the session-signed challenge for the key the proof is bound to", async () => {
@@ -256,5 +297,15 @@ describe("verifyLoginChallenge", () => {
     ]) {
       expect(verifyLoginChallenge(input as never)).toBe(false);
     }
+  });
+});
+
+describe("bundled verifying key", () => {
+  it("compiles in exactly keys/login_vk.json, the file the package also exports", async () => {
+    const { LOGIN_VERIFICATION_KEY } = await import("../src/login-vk.js");
+    const shipped = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "keys", "login_vk.json"), "utf8"));
+    // On a mismatch, rebuild: `pnpm --filter @ghostlink/verify build` regenerates src/login-vk.ts.
+    expect(LOGIN_VERIFICATION_KEY).toEqual(shipped);
+    expect(bundledLoginVerificationKey()).toEqual(shipped);
   });
 });

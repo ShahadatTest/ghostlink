@@ -40,7 +40,7 @@ Try it with a real proof: [`examples/verify-login`](../../examples/verify-login/
 3. Optional claims: holdings of a mint at or above a threshold (which requires a minimum snapshot slot), a session key and expiry, and the user's announced home address.
 4. Purpose: a website login proof cannot authorize a pocket, and a pocket authorization must match the exact policy, session kind, deployment and pocket revocation epoch (`authorizationEpoch`, default zero) you pass in `expect.pocket`.
 5. The registry root (and census root, for holdings claims) is one your root source recognises. An indexer lists one root per completed 150-slot bucket, the roots the programs keep for at least 128 buckets.
-6. The Groth16 proof verifies against the login verifying key bundled in `keys/login_vk.json`.
+6. The Groth16 proof verifies against the login verifying key bundled with the package (`keys/login_vk.json`, compiled into the code).
 
 `verifyLogin` never throws on malformed input. It returns `{ ok: false, reason }`.
 
@@ -66,14 +66,18 @@ It supports **Ed25519 session keys only**: the SDK's software sessions, which `c
 
 ## Deploying
 
-`verifyLogin` loads `keys/login_vk.json` from the installed package. A bundler or serverless build that leaves the file out makes every login fail with `login verifying key unavailable (server configuration)`, not a proof error. Call `bundledLoginVerificationKey()` at startup to fail fast, or import the key so your bundler includes it, and pass it explicitly:
+**Module format.** The package is ESM only: `"type": "module"` and an `exports` map with `types`, `import` and `default` conditions. Use `import`, or `await import("@ghostlink/verify")` from CommonJS. TypeScript finds the types with `moduleResolution` set to `NodeNext` or `Bundler`. The legacy `node` (node10) mode does not read `exports`.
 
-```ts
-// TypeScript needs "resolveJsonModule": true for this import.
-import loginVk from "@ghostlink/verify/keys/login_vk.json" with { type: "json" };
+**The verifying key is part of the code.** `keys/login_vk.json` is compiled into the module. It loads with the code in Node, through bundlers and in serverless builds, so there is no file to copy. `bundledLoginVerificationKey()` returns it. The JSON file is still exported as `@ghostlink/verify/keys/login_vk.json` for tools that want it. Pass `verificationKey` only when you verify against a different circuit build on purpose. If the key is not an object, every login fails with `login verifying key unavailable (server configuration)` instead of a proof error.
 
-await verifyLogin({ ...request, verificationKey: loginVk });
-```
+**Run `verifyLogin` in a Node.js runtime.** Loading the package needs no Node.js built-in. The proof check runs snarkjs, which is loaded the first time it is needed and compiles its curve arithmetic to WebAssembly at run time. Some runtimes do not allow that:
+
+- the [Next.js (and Vercel) Edge Runtime](https://nextjs.org/docs/app/api-reference/edge) disables `WebAssembly.compile` and `WebAssembly.instantiate` from a buffer;
+- [Cloudflare Workers](https://developers.cloudflare.com/workers/runtime-apis/webassembly/) instantiate only pre-compiled WebAssembly modules.
+
+On those runtimes `verifyLogin` returns `{ ok: false }` with a reason starting `proof verifier unavailable on this runtime (server configuration)`, never a proof error. `verifyLoginChallenge`, `loginChallengeDigest` and `LOGIN_SIGNALS` work there too. In Next.js, verify logins in a route handler or server action on the default Node.js runtime, not in `proxy` (middleware) or in a route with `runtime = "edge"`. Next.js also scans edge bundles for `WebAssembly.compile` and may refuse to build one that imports this package, even if `verifyLogin` is never called there.
+
+The repository's packaging check imports the installed package as an edge runtime would see it (browser and worker export conditions, no Node.js built-ins, WebAssembly compilation refused) and expects exactly this behaviour. It has not been run on Vercel or Cloudflare themselves.
 
 ## Security notes
 
