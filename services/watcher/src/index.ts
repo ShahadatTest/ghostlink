@@ -29,15 +29,17 @@
  *   WATCHER_TOTAL_BUDGET_LAMPORTS — explicit cumulative fee cap, never reset by restart
  *   WATCHER_MAX_FEE_LAMPORTS — per-packet cap (default 20000)
  */
-import { readFileSync } from "node:fs";
+import "./preflight.js"; // First: reports a bad GHOSTLINK_DEPLOYMENT before service-kit loads it.
 import { createHash, randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Connection, Keypair, PublicKey } from "@solana/web3.js";
-import { assertDeploymentGenesis } from "@ghostlink/common";
 import { DEPLOYMENT, POCKET, type GhostLinkEvent } from "@ghostlink/service-kit";
-import { createRpcPool, loadRpcEndpoints } from "@ghostlink/service-kit/rpc";
+import {
+  StartupError, checkDeploymentGenesis, describeStartupFailure, integerVariable, listen, openRpc, openState, portVariable, probeRpc,
+  readKeypair, readStorageKey, requireGenesis, requirePin, requireVariable,
+} from "@ghostlink/service-kit/startup";
 import { CrankJournal } from "./journal.js";
 import { DurableCranker } from "./crank.js";
 import { WatcherState } from "./state.js";
@@ -272,44 +274,60 @@ export class Watcher {
 // Entry point when run directly.
 const isMain = process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href;
 async function main() {
-  const genesisHash = process.env.WATCHER_GENESIS_HASH, statePath = process.env.WATCHER_STATE_PATH, keyPath = process.env.WATCHER_STATE_KEY_PATH;
-  const stateId = process.env.WATCHER_STATE_ID;
-  if (!genesisHash || !statePath || !keyPath || !stateId || !/^[0-9a-f]{64}$/.test(stateId)) throw new Error("approved watcher chain, durable state, pinned identity and encryption key are required");
-  assertDeploymentGenesis(DEPLOYMENT, genesisHash);
-  const rpc = createRpcPool({ genesisHash, endpoints: loadRpcEndpoints(process.env.RPC_ENDPOINTS_PATH, process.env.RPC_URL) });
+  const env = process.env;
+  const genesisHash = requireGenesis(env, "WATCHER_GENESIS_HASH");
+  const statePath = requireVariable(env, "WATCHER_STATE_PATH", "the state.sqlite created by dist/initialize.js");
+  const keyPath = requireVariable(env, "WATCHER_STATE_KEY_PATH", "the state-key created by dist/initialize.js");
+  const stateId = requirePin(env, "WATCHER_STATE_ID", "stateId");
+  checkDeploymentGenesis("WATCHER_GENESIS_HASH", DEPLOYMENT, genesisHash);
+  const portName = env.WATCHER_PORT !== undefined ? "WATCHER_PORT" : "PORT";
+  const port = portVariable(env, portName, 8791), interval = integerVariable(env, "WATCHER_POLL_MS", 5000, 100, 30_000);
+  const rpc = openRpc(env, genesisHash);
   let journal: CrankJournal | undefined, state: WatcherState | undefined;
   const server = createServer();
   try {
-    await rpc.connection.getGenesisHash();
-    const notifier = process.env.NOTIFY_WEBHOOK ? new WebhookNotifier(process.env.NOTIFY_WEBHOOK) : new ConsoleNotifier();
-    const threshold = BigInt(process.env.LARGE_FILL_USD_E6 ?? "100000000");
-    const cranker = process.env.GHOSTLINK_WATCHER_KEYPAIR
-      ? Keypair.fromSecretKey(Uint8Array.from(JSON.parse(readFileSync(process.env.GHOSTLINK_WATCHER_KEYPAIR, "utf8")))) : undefined;
-    if (cranker) {
-      const journalPath = process.env.WATCHER_JOURNAL_PATH, journalKeyPath = process.env.WATCHER_JOURNAL_KEY_PATH, journalId = process.env.WATCHER_JOURNAL_ID;
-      if (!journalPath || !journalKeyPath || !process.env.WATCHER_TOTAL_BUDGET_LAMPORTS || !journalId) throw new Error("funded watcher journal, pinned identity and budget are required");
-      const journalKey = readFileSync(journalKeyPath);
-      try { journal = CrankJournal.openExisting(journalPath, journalKey, { genesisHash, pocketProgram: POCKET.toBase58(), payer: cranker.publicKey.toBase58() }, {
-        maximumFeeLamports: Number(process.env.WATCHER_MAX_FEE_LAMPORTS ?? 20_000), totalBudgetLamports: Number(process.env.WATCHER_TOTAL_BUDGET_LAMPORTS),
-      }, journalId); } finally { journalKey.fill(0); }
+    await probeRpc(rpc, "WATCHER_GENESIS_HASH");
+    let notifier: Notifier = new ConsoleNotifier();
+    if (env.NOTIFY_WEBHOOK) {
+      // The endpoint can carry a credential in its path or query: the reason is shown, never the URL.
+      try { notifier = new WebhookNotifier(env.NOTIFY_WEBHOOK); } catch (error) { throw new StartupError(`NOTIFY_WEBHOOK: ${(error as Error).message}`); }
     }
-    const key = readFileSync(keyPath);
-    try { state = WatcherState.openExisting(statePath, key, { genesisHash, pocketProgram: POCKET.toBase58(), payer: cranker?.publicKey.toBase58() ?? null,
-      receiver: createHash("sha256").update(process.env.NOTIFY_WEBHOOK ?? "console").digest("hex"), threshold: threshold.toString() }, stateId); }
-    finally { key.fill(0); }
+    const thresholdText = env.LARGE_FILL_USD_E6 ?? "100000000";
+    if (!/^(0|[1-9][0-9]{0,19})$/.test(thresholdText) || BigInt(thresholdText) > 0xffffffffffffffffn) throw new StartupError("LARGE_FILL_USD_E6 must be a whole number of micro-dollars");
+    const threshold = BigInt(thresholdText);
+    const cranker = env.GHOSTLINK_WATCHER_KEYPAIR ? readKeypair("GHOSTLINK_WATCHER_KEYPAIR", env.GHOSTLINK_WATCHER_KEYPAIR) : undefined;
+    if (cranker) {
+      const funded = "a funded watcher (GHOSTLINK_WATCHER_KEYPAIR is set) needs the crank journal from dist/initialize.js funded";
+      const journalPath = requireVariable(env, "WATCHER_JOURNAL_PATH", funded), journalKeyPath = requireVariable(env, "WATCHER_JOURNAL_KEY_PATH", funded);
+      const journalId = requirePin(env, "WATCHER_JOURNAL_ID", "journalId");
+      requireVariable(env, "WATCHER_TOTAL_BUDGET_LAMPORTS", "the cumulative crank fee budget recorded in deployment.json limits");
+      const journalKey = readStorageKey("WATCHER_JOURNAL_KEY_PATH", journalKeyPath);
+      try {
+        journal = openState("WATCHER_JOURNAL_PATH", journalPath,
+          "check WATCHER_JOURNAL_KEY_PATH, WATCHER_JOURNAL_ID, the budget variables and GHOSTLINK_WATCHER_KEYPAIR against its deployment.json",
+          () => CrankJournal.openExisting(journalPath, journalKey, { genesisHash, pocketProgram: POCKET.toBase58(), payer: cranker.publicKey.toBase58() }, {
+            maximumFeeLamports: Number(env.WATCHER_MAX_FEE_LAMPORTS ?? 20_000), totalBudgetLamports: Number(env.WATCHER_TOTAL_BUDGET_LAMPORTS),
+          }, journalId));
+      } finally { journalKey.fill(0); }
+    }
+    const key = readStorageKey("WATCHER_STATE_KEY_PATH", keyPath);
+    try {
+      state = openState("WATCHER_STATE_PATH", statePath,
+        "check WATCHER_STATE_KEY_PATH, WATCHER_STATE_ID, NOTIFY_WEBHOOK, LARGE_FILL_USD_E6, WATCHER_GENESIS_HASH and GHOSTLINK_DEPLOYMENT against its deployment.json",
+        () => WatcherState.openExisting(statePath, key, { genesisHash, pocketProgram: POCKET.toBase58(), payer: cranker?.publicKey.toBase58() ?? null,
+          receiver: createHash("sha256").update(env.NOTIFY_WEBHOOK ?? "console").digest("hex"), threshold: threshold.toString() }, stateId));
+    } finally { key.fill(0); }
     const watcher = new Watcher(rpc.connection, notifier, threshold, cranker, state, journal, {
-      maximumPages: Number(process.env.WATCHER_PAGES_PER_TICK ?? 4), maximumTransactions: Number(process.env.WATCHER_TRANSACTIONS_PER_TICK ?? 32),
-      maximumDeliveries: Number(process.env.WATCHER_DELIVERIES_PER_TICK ?? 32), maximumTickMs: Number(process.env.WATCHER_TICK_BUDGET_MS ?? 10_000),
+      maximumPages: Number(env.WATCHER_PAGES_PER_TICK ?? 4), maximumTransactions: Number(env.WATCHER_TRANSACTIONS_PER_TICK ?? 32),
+      maximumDeliveries: Number(env.WATCHER_DELIVERIES_PER_TICK ?? 32), maximumTickMs: Number(env.WATCHER_TICK_BUDGET_MS ?? 10_000),
     });
-    const port = Number(process.env.WATCHER_PORT ?? process.env.PORT ?? 8791), interval = Number(process.env.WATCHER_POLL_MS ?? 5000);
-    if (!Number.isInteger(port) || port < 1 || port > 65535 || !Number.isInteger(interval) || interval < 100 || interval > 30_000) throw new Error("invalid watcher service limits");
     server.requestTimeout = 5000; server.headersTimeout = 5000; server.keepAliveTimeout = 1000; server.maxConnections = 64;
     server.on("request", (req, res) => {
       const route = req.method === "GET" && (req.url === "/ready" || req.url === "/health");
       const ready = watcher.ready(); res.writeHead(route ? (req.url === "/ready" && !ready ? 503 : 200) : 404, { "content-type": "application/json" });
       res.end(JSON.stringify(route ? { ready } : { error: "not found" }));
     });
-    await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(port, resolve); });
+    await listen(server, port, portName);
     const timer = watcher.start(interval);
     let stopping = false;
     const shutdown = (failed = false) => {
@@ -328,4 +346,7 @@ async function main() {
     console.log(`ghostlink watcher running on :${port}`);
   } catch (error) { server.close(); rpc.close(); state?.close(); journal?.close(); throw error; }
 }
-if (isMain) void main().catch(() => { console.error("watcher startup failed; check approved configuration and dependencies"); process.exitCode = 1; });
+if (isMain) void main().catch(error => {
+  console.error(describeStartupFailure("watcher startup failed", error, "watcher startup failed; check approved configuration and dependencies"));
+  process.exitCode = 1;
+});

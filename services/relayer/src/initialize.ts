@@ -1,17 +1,20 @@
 /** Explicit fresh-payer provisioning. Never adopts an existing payer or overwrites state. */
-import { mkdirSync, writeFileSync, openSync, fsyncSync, closeSync } from "node:fs";
+import "./preflight.js"; // First: reports a bad GHOSTLINK_DEPLOYMENT before service-kit loads it.
+import { existsSync, mkdirSync, writeFileSync, openSync, fsyncSync, closeSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { join, dirname, resolve } from "node:path";
-import { Keypair, PublicKey } from "@solana/web3.js";
-import { assertDeploymentGenesis } from "@ghostlink/common";
+import { Keypair } from "@solana/web3.js";
 import { DEPLOYMENT, POCKET, REGISTRY, CENSUS } from "@ghostlink/service-kit";
+import { StartupError, checkDeploymentGenesis, describeStartupFailure, requireGenesis } from "@ghostlink/service-kit/startup";
 import { RelayerJournal } from "./journal.js";
 
 function main() {
-  const [directory, ...extra] = process.argv.slice(2), genesisHash = process.env.RELAYER_GENESIS_HASH;
-  if (!directory || extra.length || !genesisHash || new PublicKey(genesisHash).toBase58() !== genesisHash) throw new Error("new directory and approved genesis required");
+  const [directory, ...extra] = process.argv.slice(2);
+  if (!directory || extra.length) throw new StartupError("usage: node dist/initialize.js <new state directory>");
+  const genesisHash = requireGenesis(process.env, "RELAYER_GENESIS_HASH");
   // Public chains need a deployment manifest with their own programs (GHOSTLINK_DEPLOYMENT).
-  assertDeploymentGenesis(DEPLOYMENT, genesisHash);
+  checkDeploymentGenesis("RELAYER_GENESIS_HASH", DEPLOYMENT, genesisHash);
+  if (existsSync(directory)) throw new StartupError(`${directory} already exists; initialization only creates a new directory and never adopts or overwrites state`);
   mkdirSync(directory, { mode: 0o700 }); // Exclusive new directory; never recurse or overwrite.
   const payer = Keypair.generate(), key = randomBytes(32);
   const scope = { genesisHash, payer: payer.publicKey.toBase58(), pocket: POCKET.toBase58(), registry: REGISTRY.toBase58(), census: CENSUS.toBase58() };
@@ -33,4 +36,8 @@ function main() {
     console.log("Fresh payer and journal initialized. Pin deployment.json in operator configuration before funding the payer.");
   } finally { journal?.close(); key.fill(0); }
 }
-try { main(); } catch { console.error("Relayer initialization failed; use a new directory and an approved development genesis. Inspect partial output before retrying."); process.exitCode = 1; }
+try { main(); } catch (error) {
+  console.error(describeStartupFailure("relayer initialization failed", error,
+    "Relayer initialization failed; use a new directory and an approved development genesis. Inspect partial output before retrying."));
+  process.exitCode = 1;
+}

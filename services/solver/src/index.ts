@@ -23,61 +23,64 @@
  *   JUPITER_SLIPPAGE_BPS — fixed quote tolerance, 0..500 (default 50)
  *   TRUST_PROXY=1 — honour X-Forwarded-For (only behind your own proxy)
  */
-import { readFileSync, statSync } from "node:fs";
-import { Keypair } from "@solana/web3.js";
-import { createRpcPool, loadRpcEndpoints } from "@ghostlink/service-kit/rpc";
+import "./preflight.js"; // First: reports a bad GHOSTLINK_DEPLOYMENT before service-kit loads it.
+import {
+  StartupError, checkDeploymentGenesis, describeStartupFailure, distinctPorts, listen, openRpc, openState, portVariable, probeRpc,
+  readKeypair, readPrivateFile, readStorageKey, requireGenesis, requirePin, requireVariable,
+} from "@ghostlink/service-kit/startup";
 import { buildServer, MockPlanner } from "./server.js";
 import { SubmissionJournal } from "./journal.js";
-import { assertDeploymentGenesis } from "@ghostlink/common";
 import { DEPLOYMENT, POCKET } from "@ghostlink/service-kit";
 import { DEFAULT_TRANSACTION_LIMITS } from "./transactions.js";
 import { JupiterPlanner } from "./jupiter.js";
 import { operatorServer } from "./operations.js";
 
 async function main(): Promise<void> {
-  const keypairPath = process.env.GHOSTLINK_SOLVER_KEYPAIR;
-  if (!keypairPath) {
-    console.error("GHOSTLINK_SOLVER_KEYPAIR is required (path to a keypair JSON outside the repo)");
-    process.exit(1);
+  const env = process.env;
+  const genesisHash = requireGenesis(env, "SOLVER_GENESIS_HASH");
+  const keypairPath = requireVariable(env, "GHOSTLINK_SOLVER_KEYPAIR", "the payer.json created by dist/initialize.js (outside the repository)");
+  const journalPath = requireVariable(env, "SOLVER_JOURNAL_PATH", "the journal.sqlite created by dist/initialize.js");
+  const journalKeyPath = requireVariable(env, "SOLVER_JOURNAL_KEY_PATH", "the storage-key created by dist/initialize.js");
+  const journalId = requirePin(env, "SOLVER_JOURNAL_ID", "journalId");
+  checkDeploymentGenesis("SOLVER_GENESIS_HASH", DEPLOYMENT, genesisHash);
+  const port = portVariable(env, "PORT", 8789);
+  const operationsPort = portVariable(env, "OPERATIONS_PORT", 18789);
+  distinctPorts({ PORT: port, OPERATIONS_PORT: operationsPort });
+  const router = env.SOLVER_ROUTER ?? "inventory";
+  if (router !== "inventory" && router !== "jupiter-raydium-cp") throw new StartupError("SOLVER_ROUTER must be inventory or jupiter-raydium-cp");
+  let priceAccounts: Record<string, string> = {};
+  if (env.PRICE_ACCOUNTS) {
+    try { priceAccounts = JSON.parse(env.PRICE_ACCOUNTS) as Record<string, string>; } catch {
+      throw new StartupError("PRICE_ACCOUNTS must be a JSON object mapping mint addresses to price update accounts");
+    }
   }
-  const journalPath = process.env.SOLVER_JOURNAL_PATH;
-  const journalKeyPath = process.env.SOLVER_JOURNAL_KEY_PATH;
-  const genesisHash = process.env.SOLVER_GENESIS_HASH;
-  const journalId = process.env.SOLVER_JOURNAL_ID;
-  if (!journalPath || !journalKeyPath || !genesisHash || !journalId || !/^[0-9a-f]{64}$/.test(journalId)) {
-    throw new Error("solver journal path, key, pinned identity and approved genesis are required");
-  }
-  const keypair = Keypair.fromSecretKey(
-    Uint8Array.from(JSON.parse(readFileSync(keypairPath, "utf8"))),
-  );
-  assertDeploymentGenesis(DEPLOYMENT, genesisHash);
-  const rpc = createRpcPool({ genesisHash, endpoints: loadRpcEndpoints(process.env.RPC_ENDPOINTS_PATH, process.env.RPC_URL) });
+  const keypair = readKeypair("GHOSTLINK_SOLVER_KEYPAIR", keypairPath);
+  const rpc = openRpc(env, genesisHash);
   const connection = rpc.connection;
-  if (await connection.getGenesisHash() !== genesisHash) throw new Error("RPC genesis differs from approved solver configuration");
-  const router = process.env.SOLVER_ROUTER ?? "inventory";
-  if (router !== "inventory" && router !== "jupiter-raydium-cp") throw new Error("unsupported SOLVER_ROUTER");
+  await probeRpc(rpc, "SOLVER_GENESIS_HASH");
   function privateText(name: string, maximum: number): string {
-    const path = process.env[name];
-    if (!path || !statSync(path).isFile() || statSync(path).size > maximum) throw new Error(`${name} must name a bounded configuration file`);
-    return readFileSync(path, "utf8").trim();
+    const path = requireVariable(env, name, `a private configuration file for SOLVER_ROUTER=${router}`);
+    return readPrivateFile(name, path, maximum).toString("utf8").trim();
+  }
+  let pools: unknown;
+  if (router !== "inventory") {
+    try { pools = JSON.parse(privateText("JUPITER_POOLS_PATH", 32_768)); } catch (error) {
+      if (error instanceof StartupError) throw error;
+      throw new StartupError("JUPITER_POOLS_PATH must hold a JSON array of approved pools");
+    }
   }
   const planner = router === "inventory" ? new MockPlanner() : new JupiterPlanner(connection, {
     apiKey: privateText("JUPITER_API_KEY_PATH", 512),
-    pools: JSON.parse(privateText("JUPITER_POOLS_PATH", 32_768)),
-    slippageBps: Number(process.env.JUPITER_SLIPPAGE_BPS ?? 50),
+    pools: pools as ConstructorParameters<typeof JupiterPlanner>[1]["pools"],
+    slippageBps: Number(env.JUPITER_SLIPPAGE_BPS ?? 50),
   });
-  const journalKey = readFileSync(journalKeyPath);
+  const journalKey = readStorageKey("SOLVER_JOURNAL_KEY_PATH", journalKeyPath);
   let journal: SubmissionJournal;
-  try { journal = SubmissionJournal.openExisting(journalPath, journalKey,
-    { genesisHash, pocketProgram: POCKET.toBase58(), solver: keypair.publicKey.toBase58() }, journalId); }
-  finally { journalKey.fill(0); }
-  const priceAccounts = process.env.PRICE_ACCOUNTS
-    ? (JSON.parse(process.env.PRICE_ACCOUNTS) as Record<string, string>)
-    : {};
-  const port = Number(process.env.PORT ?? 8789);
-  const operationsPort = Number(process.env.OPERATIONS_PORT ?? 18789);
-  for (const n of [port, operationsPort]) if (!Number.isInteger(n) || n < 1 || n > 65535) throw new Error("invalid solver HTTP port");
-  if (port === operationsPort) throw new Error("solver and operations ports must differ");
+  try {
+    journal = openState("SOLVER_JOURNAL_PATH", journalPath,
+      "check SOLVER_JOURNAL_KEY_PATH, SOLVER_JOURNAL_ID, GHOSTLINK_SOLVER_KEYPAIR, SOLVER_GENESIS_HASH and GHOSTLINK_DEPLOYMENT against its deployment.json",
+      () => SubmissionJournal.openExisting(journalPath, journalKey, { genesisHash, pocketProgram: POCKET.toBase58(), solver: keypair.publicKey.toBase58() }, journalId));
+  } finally { journalKey.fill(0); }
 
   const server = buildServer({
     connection,
@@ -120,15 +123,15 @@ async function main(): Promise<void> {
   }
   process.once("SIGTERM", shutdown);
   process.once("SIGINT", shutdown);
-  operator.listen(operationsPort, "127.0.0.1");
-  server.listen(port, () => {
-    console.log(`ghostlink solver on :${port}, identity ${keypair.publicKey.toBase58()}`);
-  });
+  await listen(operator, operationsPort, "OPERATIONS_PORT", "127.0.0.1");
+  await listen(server, port, "PORT");
+  console.log(`ghostlink solver on :${port}, identity ${keypair.publicKey.toBase58()}`);
 }
 
-// Report startup failures generically: a raw parse error of a damaged keypair file can quote
-// secret-key bytes. Exit at once, as an uncaught startup error would, so no handle keeps it alive.
-void main().catch(() => {
-  console.error("solver startup failed; check approved configuration, keys, journal and dependencies");
+// Classified configuration and state problems are named (see @ghostlink/service-kit/startup);
+// anything else is reported generically, since a raw parse error of a damaged keypair file can
+// quote secret-key bytes. Exit at once, as an uncaught startup error would, so no handle keeps it alive.
+void main().catch(error => {
+  console.error(describeStartupFailure("solver startup failed", error, "solver startup failed; check approved configuration, keys, journal and dependencies"));
   process.exit(1);
 });

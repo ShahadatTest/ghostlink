@@ -1,17 +1,19 @@
 /** Explicit fresh archival rebuild provisioning; no network access or service startup. */
-import { mkdirSync, writeFileSync, openSync, fsyncSync, closeSync } from "node:fs";
+import "./preflight.js"; // First: reports a bad GHOSTLINK_DEPLOYMENT before service-kit loads it.
+import { existsSync, mkdirSync, writeFileSync, openSync, fsyncSync, closeSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { join, dirname, resolve } from "node:path";
-import { PublicKey } from "@solana/web3.js";
-import { assertDeploymentGenesis } from "@ghostlink/common";
 import { CENSUS, DEPLOYMENT, POCKET, REGISTRY } from "@ghostlink/service-kit";
+import { StartupError, checkDeploymentGenesis, describeStartupFailure, requireGenesis } from "@ghostlink/service-kit/startup";
 import { IndexerDatabase } from "./database.js";
 
 function main() {
-  const [directory, ...extra] = process.argv.slice(2), genesisHash = process.env.INDEXER_GENESIS_HASH;
-  if (!directory || extra.length || !genesisHash || new PublicKey(genesisHash).toBase58() !== genesisHash) throw new Error("new directory and approved genesis required");
+  const [directory, ...extra] = process.argv.slice(2);
+  if (!directory || extra.length) throw new StartupError("usage: node dist/initialize.js <new state directory>");
+  const genesisHash = requireGenesis(process.env, "INDEXER_GENESIS_HASH");
   // Public chains need a deployment manifest with their own programs (GHOSTLINK_DEPLOYMENT).
-  assertDeploymentGenesis(DEPLOYMENT, genesisHash);
+  checkDeploymentGenesis("INDEXER_GENESIS_HASH", DEPLOYMENT, genesisHash);
+  if (existsSync(directory)) throw new StartupError(`${directory} already exists; initialization only creates a new directory and never adopts or overwrites state`);
   mkdirSync(directory, { mode: 0o700 });
   const key = randomBytes(32), scope = { genesisHash, programs: [REGISTRY, CENSUS, POCKET].map(p => p.toBase58()), commitment: "finalized" };
   const write = (name: string, data: string | Uint8Array) => writeFileSync(join(directory, name), data, { flag: "wx", mode: 0o600, flush: true });
@@ -30,4 +32,8 @@ function main() {
     console.log("Fresh indexer state initialized. Pin deployment.json independently; reconcile archival history before switching clients.");
   } finally { database?.close(); key.fill(0); }
 }
-try { main(); } catch { console.error("Indexer initialization failed; use a new directory and approved development chain. Inspect partial output before retrying."); process.exitCode = 1; }
+try { main(); } catch (error) {
+  console.error(describeStartupFailure("indexer initialization failed", error,
+    "Indexer initialization failed; use a new directory and approved development chain. Inspect partial output before retrying."));
+  process.exitCode = 1;
+}

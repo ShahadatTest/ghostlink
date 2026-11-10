@@ -1,25 +1,32 @@
 /** Explicit fresh observer/funded-watcher provisioning; no network calls or funding. */
-import { mkdirSync, writeFileSync, openSync, fsyncSync, closeSync } from "node:fs";
+import "./preflight.js"; // First: reports a bad GHOSTLINK_DEPLOYMENT before service-kit loads it.
+import { existsSync, mkdirSync, writeFileSync, openSync, fsyncSync, closeSync } from "node:fs";
 import { createHash, randomBytes } from "node:crypto";
 import { join, dirname, resolve } from "node:path";
-import { Keypair, PublicKey } from "@solana/web3.js";
-import { assertDeploymentGenesis } from "@ghostlink/common";
+import { Keypair } from "@solana/web3.js";
 import { DEPLOYMENT, POCKET } from "@ghostlink/service-kit";
+import { StartupError, checkDeploymentGenesis, describeStartupFailure, requireGenesis } from "@ghostlink/service-kit/startup";
 import { CrankJournal } from "./journal.js";
 import { WatcherState } from "./state.js";
 import { WebhookNotifier } from "./index.js";
 
 function main() {
-  const [mode, directory, ...extra] = process.argv.slice(2), genesisHash = process.env.WATCHER_GENESIS_HASH;
-  if (!["observer", "funded"].includes(mode ?? "") || !directory || extra.length || !genesisHash || new PublicKey(genesisHash).toBase58() !== genesisHash) throw new Error("mode, new directory and approved genesis required");
+  const [mode, directory, ...extra] = process.argv.slice(2);
+  if (!["observer", "funded"].includes(mode ?? "") || !directory || extra.length) throw new StartupError("usage: node dist/initialize.js <observer|funded> <new state directory>");
+  const genesisHash = requireGenesis(process.env, "WATCHER_GENESIS_HASH");
   // Public chains need a deployment manifest with their own programs (GHOSTLINK_DEPLOYMENT).
-  assertDeploymentGenesis(DEPLOYMENT, genesisHash);
-  if (process.env.NOTIFY_WEBHOOK) new WebhookNotifier(process.env.NOTIFY_WEBHOOK); // URL validation only.
+  checkDeploymentGenesis("WATCHER_GENESIS_HASH", DEPLOYMENT, genesisHash);
+  if (process.env.NOTIFY_WEBHOOK) { // URL validation only; the URL itself is never shown.
+    try { new WebhookNotifier(process.env.NOTIFY_WEBHOOK); } catch (error) { throw new StartupError(`NOTIFY_WEBHOOK: ${(error as Error).message}`); }
+  }
   const threshold = BigInt(process.env.LARGE_FILL_USD_E6 ?? "100000000").toString();
   const limits = mode === "funded" ? { maximumFeeLamports: Number(process.env.WATCHER_MAX_FEE_LAMPORTS ?? 20_000),
     totalBudgetLamports: Number(process.env.WATCHER_TOTAL_BUDGET_LAMPORTS) } : undefined;
   if (limits && (!Number.isSafeInteger(limits.maximumFeeLamports) || limits.maximumFeeLamports < 1 ||
-    !Number.isSafeInteger(limits.totalBudgetLamports) || limits.totalBudgetLamports < limits.maximumFeeLamports)) throw new Error("explicit funded fee budget required");
+    !Number.isSafeInteger(limits.totalBudgetLamports) || limits.totalBudgetLamports < limits.maximumFeeLamports)) {
+    throw new StartupError("funded mode needs WATCHER_TOTAL_BUDGET_LAMPORTS (and optional WATCHER_MAX_FEE_LAMPORTS, default 20000) with the total at least the per-packet maximum");
+  }
+  if (existsSync(directory)) throw new StartupError(`${directory} already exists; initialization only creates a new directory and never adopts or overwrites state`);
   mkdirSync(directory, { mode: 0o700 });
   const payer = mode === "funded" ? Keypair.generate() : undefined, stateKey = randomBytes(32), crankKey = randomBytes(32);
   const scope = { genesisHash, pocketProgram: POCKET.toBase58(), payer: payer?.publicKey.toBase58() ?? null,
@@ -49,4 +56,8 @@ function main() {
     console.log("Fresh watcher state initialized. Pin deployment.json in operator configuration before starting or funding.");
   } finally { state?.close(); journal?.close(); stateKey.fill(0); crankKey.fill(0); }
 }
-try { main(); } catch { console.error("Watcher initialization failed; use observer/funded mode, a new directory and approved development configuration. Inspect partial output before retrying."); process.exitCode = 1; }
+try { main(); } catch (error) {
+  console.error(describeStartupFailure("watcher initialization failed", error,
+    "Watcher initialization failed; use observer/funded mode, a new directory and approved development configuration. Inspect partial output before retrying."));
+  process.exitCode = 1;
+}
