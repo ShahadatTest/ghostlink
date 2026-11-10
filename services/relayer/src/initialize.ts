@@ -3,13 +3,15 @@ import { mkdirSync, writeFileSync, openSync, fsyncSync, closeSync } from "node:f
 import { randomBytes } from "node:crypto";
 import { join, dirname, resolve } from "node:path";
 import { Keypair, PublicKey } from "@solana/web3.js";
-import { POCKET, REGISTRY, CENSUS } from "@ghostlink/service-kit";
+import { assertDeploymentGenesis } from "@ghostlink/common";
+import { DEPLOYMENT, POCKET, REGISTRY, CENSUS } from "@ghostlink/service-kit";
 import { RelayerJournal } from "./journal.js";
 
 function main() {
   const [directory, ...extra] = process.argv.slice(2), genesisHash = process.env.RELAYER_GENESIS_HASH;
   if (!directory || extra.length || !genesisHash || new PublicKey(genesisHash).toBase58() !== genesisHash) throw new Error("new directory and approved genesis required");
-  if (["EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG", "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d"].includes(genesisHash)) throw new Error("V2 relayer has no verified public deployment");
+  // Public chains need a deployment manifest with their own programs (GHOSTLINK_DEPLOYMENT).
+  assertDeploymentGenesis(DEPLOYMENT, genesisHash);
   mkdirSync(directory, { mode: 0o700 }); // Exclusive new directory; never recurse or overwrite.
   const payer = Keypair.generate(), key = randomBytes(32);
   const scope = { genesisHash, payer: payer.publicKey.toBase58(), pocket: POCKET.toBase58(), registry: REGISTRY.toBase58(), census: CENSUS.toBase58() };

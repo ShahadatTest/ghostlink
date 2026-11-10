@@ -28,7 +28,8 @@ import { Keypair } from "@solana/web3.js";
 import { createRpcPool, loadRpcEndpoints } from "@ghostlink/service-kit/rpc";
 import { buildServer, MockPlanner } from "./server.js";
 import { SubmissionJournal } from "./journal.js";
-import { POCKET_PROGRAM_ID } from "@ghostlink/common";
+import { assertDeploymentGenesis } from "@ghostlink/common";
+import { DEPLOYMENT, POCKET } from "@ghostlink/service-kit";
 import { DEFAULT_TRANSACTION_LIMITS } from "./transactions.js";
 import { JupiterPlanner } from "./jupiter.js";
 import { operatorServer } from "./operations.js";
@@ -49,6 +50,7 @@ async function main(): Promise<void> {
   const keypair = Keypair.fromSecretKey(
     Uint8Array.from(JSON.parse(readFileSync(keypairPath, "utf8"))),
   );
+  assertDeploymentGenesis(DEPLOYMENT, genesisHash);
   const rpc = createRpcPool({ genesisHash, endpoints: loadRpcEndpoints(process.env.RPC_ENDPOINTS_PATH, process.env.RPC_URL) });
   const connection = rpc.connection;
   if (await connection.getGenesisHash() !== genesisHash) throw new Error("RPC genesis differs from approved solver configuration");
@@ -67,7 +69,7 @@ async function main(): Promise<void> {
   const journalKey = readFileSync(journalKeyPath);
   let journal: SubmissionJournal;
   try { journal = SubmissionJournal.openExisting(journalPath, journalKey,
-    { genesisHash, pocketProgram: POCKET_PROGRAM_ID, solver: keypair.publicKey.toBase58() }, journalId); }
+    { genesisHash, pocketProgram: POCKET.toBase58(), solver: keypair.publicKey.toBase58() }, journalId); }
   finally { journalKey.fill(0); }
   const priceAccounts = process.env.PRICE_ACCOUNTS
     ? (JSON.parse(process.env.PRICE_ACCOUNTS) as Record<string, string>)

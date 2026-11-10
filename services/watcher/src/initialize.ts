@@ -3,7 +3,8 @@ import { mkdirSync, writeFileSync, openSync, fsyncSync, closeSync } from "node:f
 import { createHash, randomBytes } from "node:crypto";
 import { join, dirname, resolve } from "node:path";
 import { Keypair, PublicKey } from "@solana/web3.js";
-import { POCKET } from "@ghostlink/service-kit";
+import { assertDeploymentGenesis } from "@ghostlink/common";
+import { DEPLOYMENT, POCKET } from "@ghostlink/service-kit";
 import { CrankJournal } from "./journal.js";
 import { WatcherState } from "./state.js";
 import { WebhookNotifier } from "./index.js";
@@ -11,7 +12,8 @@ import { WebhookNotifier } from "./index.js";
 function main() {
   const [mode, directory, ...extra] = process.argv.slice(2), genesisHash = process.env.WATCHER_GENESIS_HASH;
   if (!["observer", "funded"].includes(mode ?? "") || !directory || extra.length || !genesisHash || new PublicKey(genesisHash).toBase58() !== genesisHash) throw new Error("mode, new directory and approved genesis required");
-  if (["EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG", "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d"].includes(genesisHash)) throw new Error("V2 watcher has no verified public deployment");
+  // Public chains need a deployment manifest with their own programs (GHOSTLINK_DEPLOYMENT).
+  assertDeploymentGenesis(DEPLOYMENT, genesisHash);
   if (process.env.NOTIFY_WEBHOOK) new WebhookNotifier(process.env.NOTIFY_WEBHOOK); // URL validation only.
   const threshold = BigInt(process.env.LARGE_FILL_USD_E6 ?? "100000000").toString();
   const limits = mode === "funded" ? { maximumFeeLamports: Number(process.env.WATCHER_MAX_FEE_LAMPORTS ?? 20_000),

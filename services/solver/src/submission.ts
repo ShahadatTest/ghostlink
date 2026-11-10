@@ -1,7 +1,8 @@
 import { PublicKey, VersionedTransaction, type Connection } from "@solana/web3.js";
 import { ed25519 } from "@noble/curves/ed25519";
 import { bytesToHex, policyHash, type IntentSubmission } from "@ghostlink/common";
-import { POCKET, isPocketNonceUsed, pocketPda, readPocketAccount } from "@ghostlink/service-kit";
+import { assertDeploymentGenesis } from "@ghostlink/common";
+import { DEPLOYMENT, POCKET, isPocketNonceUsed, pocketPda, readPocketAccount } from "@ghostlink/service-kit";
 import bs58 from "bs58";
 import { SubmissionJournal, type Attempt, type IntentIdentity, type PreparedTransaction, type RecoverySession } from "./journal.js";
 import type { ValidatedIntent } from "./validate.js";
@@ -26,9 +27,7 @@ export class SubmissionCoordinator {
   constructor(chain: SubmissionChain, journal: SubmissionJournal, timeoutMs = 8_000) {
     if (!Number.isInteger(timeoutMs) || timeoutMs < 10 || timeoutMs > 30_000) throw new Error("invalid RPC timeout");
     if (journal.scope.pocketProgram !== POCKET.toBase58()) throw new Error("solver encoders do not match journal program");
-    if (["EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG", "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d"].includes(journal.scope.genesisHash)) {
-      throw new Error("V2 solver has no verified public deployment");
-    }
+    assertDeploymentGenesis(DEPLOYMENT, journal.scope.genesisHash);
     this.#chain = chain; this.#journal = journal; this.#timeout = timeoutMs;
   }
 

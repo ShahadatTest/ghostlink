@@ -1,6 +1,7 @@
 import { Connection, PublicKey, Transaction, VersionedTransaction } from "@solana/web3.js";
 import { relayerRequestDigest, type RelayerRoute } from "@ghostlink/common";
-import { HttpError, POCKET, REGISTRY, CENSUS } from "@ghostlink/service-kit";
+import { assertDeploymentGenesis } from "@ghostlink/common";
+import { DEPLOYMENT, HttpError, POCKET, REGISTRY, CENSUS } from "@ghostlink/service-kit";
 import bs58 from "bs58";
 import { RelayerJournal, type RelayerPacket, type RelayerReceipt, type RelayerRecord } from "./journal.js";
 
@@ -30,7 +31,7 @@ export class RelayerSubmission {
     private readonly minimumReserveLamports = 50_000_000n, private readonly preparationGuard: () => void = () => {}) {
     if (minimumReserveLamports < 0n) throw new Error("invalid relayer reserve");
     if (journal.scope.pocket !== POCKET.toBase58() || journal.scope.registry !== REGISTRY.toBase58() || journal.scope.census !== CENSUS.toBase58()) throw new Error("relayer journal program mismatch");
-    if (["EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG", "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d"].includes(journal.scope.genesisHash)) throw new Error("V2 relayer has no verified public deployment");
+    assertDeploymentGenesis(DEPLOYMENT, journal.scope.genesisHash);
   }
   #validate(packet: RelayerPacket): Transaction {
     return validateRelayerPacket(packet, this.journal.scope.payer);

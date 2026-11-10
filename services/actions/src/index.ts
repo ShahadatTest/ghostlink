@@ -3,13 +3,14 @@ import type { Server } from "node:http";
 import { createRpcPool, loadRpcEndpoints } from "@ghostlink/service-kit/rpc";
 import { buildServer } from "./server.js";
 import { operatorServer, validateGenesis } from "./operations.js";
+import { DEPLOYMENT } from "@ghostlink/service-kit";
 
 async function main() {
   const genesisHash = process.env.ACTIONS_GENESIS_HASH;
   if (!genesisHash) throw new Error("approved Actions genesis required");
   validateGenesis(genesisHash);
-  // A legacy public-chain label is not a verified migration for the V2 candidate.
-  if (process.env.CLUSTER && process.env.CLUSTER !== "localnet") throw new Error("unverified Actions cluster configuration");
+  // A legacy cluster label must agree with the deployment manifest; it never selects one.
+  if (process.env.CLUSTER && process.env.CLUSTER !== DEPLOYMENT.cluster) throw new Error("Actions CLUSTER disagrees with the deployment manifest");
   const port = Number(process.env.PORT ?? 8790), operationsPort = Number(process.env.OPERATIONS_PORT ?? 18790);
   for (const n of [port, operationsPort]) if (!Number.isInteger(n) || n < 1 || n > 65535) throw new Error("invalid Actions port");
   if (port === operationsPort) throw new Error("Actions ports must differ");

@@ -12,18 +12,17 @@ import {
 } from "@solana/web3.js";
 import { sha256 } from "@noble/hashes/sha256";
 import {
-  CENSUS_PROGRAM_ID,
-  POCKET_PROGRAM_ID,
-  REGISTRY_PROGRAM_ID,
   SPL_TOKEN_PROGRAM_ID,
   policyBytes,
   type Policy,
 } from "@ghostlink/common";
 import { BorshWriter } from "./borsh.js";
+import { DEPLOYMENT } from "./deployment.js";
 
-export const REGISTRY = new PublicKey(REGISTRY_PROGRAM_ID);
-export const CENSUS = new PublicKey(CENSUS_PROGRAM_ID);
-export const POCKET = new PublicKey(POCKET_PROGRAM_ID);
+/** The configured deployment's programs (GHOSTLINK_DEPLOYMENT; built-in localnet by default). */
+export const REGISTRY = new PublicKey(DEPLOYMENT.registryProgram);
+export const CENSUS = new PublicKey(DEPLOYMENT.censusProgram);
+export const POCKET = new PublicKey(DEPLOYMENT.pocketProgram);
 export const TOKEN = new PublicKey(SPL_TOKEN_PROGRAM_ID);
 
 export function disc(name: string): Uint8Array {

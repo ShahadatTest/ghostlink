@@ -10,7 +10,7 @@
  */
 import { sha256 } from "@noble/hashes/sha256";
 import bs58 from "bs58";
-import { CENSUS_PROGRAM_ID, POCKET_PROGRAM_ID, REGISTRY_PROGRAM_ID } from "@ghostlink/common";
+import { DEPLOYMENT } from "./deployment.js";
 
 export function eventDisc(name: string): Uint8Array {
   return sha256(new TextEncoder().encode(`event:${name}`)).subarray(0, 8);
@@ -248,16 +248,16 @@ export function decodeEventData(payload: Uint8Array): GhostLinkEvent | null {
 
 /** The only program allowed to emit each event, and only at depth 1. */
 export const EVENT_EMITTER: Record<GhostLinkEvent["kind"], string> = {
-  Registered: REGISTRY_PROGRAM_ID,
-  SnapshotTaken: CENSUS_PROGRAM_ID,
-  SessionOpened: POCKET_PROGRAM_ID,
-  Filled: POCKET_PROGRAM_ID,
-  ChangeProposed: POCKET_PROGRAM_ID,
-  SweptHome: POCKET_PROGRAM_ID,
-  SessionRevoked: POCKET_PROGRAM_ID,
-  ChangeExecuted: POCKET_PROGRAM_ID,
-  ChangeCanceled: POCKET_PROGRAM_ID,
-  PositionWrittenOff: POCKET_PROGRAM_ID,
+  Registered: DEPLOYMENT.registryProgram,
+  SnapshotTaken: DEPLOYMENT.censusProgram,
+  SessionOpened: DEPLOYMENT.pocketProgram,
+  Filled: DEPLOYMENT.pocketProgram,
+  ChangeProposed: DEPLOYMENT.pocketProgram,
+  SweptHome: DEPLOYMENT.pocketProgram,
+  SessionRevoked: DEPLOYMENT.pocketProgram,
+  ChangeExecuted: DEPLOYMENT.pocketProgram,
+  ChangeCanceled: DEPLOYMENT.pocketProgram,
+  PositionWrittenOff: DEPLOYMENT.pocketProgram,
 };
 
 const INVOKE = /^Program (\S+) invoke \[(\d+)\]$/;

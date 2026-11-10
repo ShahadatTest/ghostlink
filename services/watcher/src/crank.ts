@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 import { Connection, Keypair, PublicKey, Transaction } from "@solana/web3.js";
 import { policyHash } from "@ghostlink/common";
-import { executeChangeIx, pocketPda, POCKET, readPocketAccount } from "@ghostlink/service-kit";
+import { assertDeploymentGenesis } from "@ghostlink/common";
+import { DEPLOYMENT, executeChangeIx, pocketPda, POCKET, readPocketAccount } from "@ghostlink/service-kit";
 import bs58 from "bs58";
 import { CrankJournal, terminalCrankStates, type CrankAttempt } from "./journal.js";
 
@@ -22,9 +23,7 @@ export class DurableCranker {
   #busy = new Set<string>();
   constructor(private readonly chain: Connection, private readonly payer: Keypair, readonly journal: CrankJournal) {
     if (journal.scope.payer !== payer.publicKey.toBase58() || journal.scope.pocketProgram !== POCKET.toBase58()) throw new Error("crank identity mismatch");
-    if (["EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG", "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d"].includes(journal.scope.genesisHash)) {
-      throw new Error("V2 watcher has no verified public deployment");
-    }
+    assertDeploymentGenesis(DEPLOYMENT, journal.scope.genesisHash);
   }
   async #account(pocket: string, minimum: number, commitment: "confirmed" | "finalized" = "confirmed") {
     const response = await this.chain.getAccountInfoAndContext(new PublicKey(pocket), { commitment, minContextSlot: minimum });

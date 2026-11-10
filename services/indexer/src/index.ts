@@ -1,6 +1,7 @@
 /** Hosted indexer: finalized ordered history, scoped durable state, bounded work and drain. */
 import { readFileSync } from "node:fs";
-import { CENSUS, POCKET, REGISTRY } from "@ghostlink/service-kit";
+import { assertDeploymentGenesis } from "@ghostlink/common";
+import { CENSUS, DEPLOYMENT, POCKET, REGISTRY } from "@ghostlink/service-kit";
 import { createRpcPool, loadRpcEndpoints } from "@ghostlink/service-kit/rpc";
 import { buildServer } from "./server.js";
 import { IndexerStore } from "./store.js";
@@ -10,6 +11,7 @@ import { IndexerDatabase } from "./database.js";
 async function main() {
   const genesisHash = process.env.INDEXER_GENESIS_HASH, path = process.env.INDEXER_STATE_PATH, keyPath = process.env.INDEXER_STATE_KEY_PATH, stateId = process.env.INDEXER_STATE_ID;
   if (!genesisHash || !path || !keyPath || !stateId || (!process.env.RPC_URL && !process.env.RPC_ENDPOINTS_PATH)) throw new Error("approved indexer chain, RPC and pinned state are required");
+  assertDeploymentGenesis(DEPLOYMENT, genesisHash);
   if (process.env.PERSIST_PATH) throw new Error("legacy indexer JSON requires an independently checked migration");
   if (process.env.INGEST_COMMITMENT && process.env.INGEST_COMMITMENT !== "finalized") throw new Error("hosted indexer requires finalized history");
   const port = Number(process.env.PORT ?? 8787), interval = Number(process.env.POLL_MS ?? 5000);

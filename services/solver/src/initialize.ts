@@ -3,16 +3,18 @@ import { mkdirSync, writeFileSync, openSync, fsyncSync, closeSync } from "node:f
 import { randomBytes } from "node:crypto";
 import { join, dirname, resolve } from "node:path";
 import { Keypair, PublicKey } from "@solana/web3.js";
-import { POCKET_PROGRAM_ID } from "@ghostlink/common";
+import { assertDeploymentGenesis } from "@ghostlink/common";
+import { DEPLOYMENT, POCKET } from "@ghostlink/service-kit";
 import { SubmissionJournal } from "./journal.js";
 
 function main() {
   const [directory, ...extra] = process.argv.slice(2), genesisHash = process.env.SOLVER_GENESIS_HASH;
   if (!directory || extra.length || !genesisHash || new PublicKey(genesisHash).toBase58() !== genesisHash) throw new Error("new directory and approved genesis required");
-  if (["EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG", "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d"].includes(genesisHash)) throw new Error("V2 solver has no verified public deployment");
+  // Public chains need a deployment manifest with their own programs (GHOSTLINK_DEPLOYMENT).
+  assertDeploymentGenesis(DEPLOYMENT, genesisHash);
   mkdirSync(directory, { mode: 0o700 });
   const payer = Keypair.generate(), key = randomBytes(32);
-  const scope = { genesisHash, pocketProgram: POCKET_PROGRAM_ID, solver: payer.publicKey.toBase58() };
+  const scope = { genesisHash, pocketProgram: POCKET.toBase58(), solver: payer.publicKey.toBase58() };
   let journal: SubmissionJournal | undefined;
   try {
     writeFileSync(join(directory, "payer.json"), JSON.stringify(Array.from(payer.secretKey)) + "\n", { flag: "wx", mode: 0o600, flush: true });

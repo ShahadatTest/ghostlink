@@ -1,4 +1,5 @@
 export * from "./borsh.js";
+export * from "./deployment.js";
 export * from "./instructions.js";
 export * from "./precompile.js";
 export * from "./events.js";

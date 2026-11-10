@@ -1,6 +1,7 @@
 import { performance } from "node:perf_hooks";
 import { PublicKey, type Connection } from "@solana/web3.js";
-import { HttpError, Router } from "@ghostlink/service-kit";
+import { assertDeploymentGenesis } from "@ghostlink/common";
+import { DEPLOYMENT, HttpError, Router } from "@ghostlink/service-kit";
 import type { createRpcPool } from "@ghostlink/service-kit/rpc";
 
 export interface OperationsOptions {
@@ -14,12 +15,10 @@ export interface OperationsOptions {
   clock?: () => number;
 }
 
-/** This candidate has no verified public deployment; a cluster label cannot approve one. */
+/** The approved genesis must suit the configured deployment (GHOSTLINK_DEPLOYMENT); a cluster label cannot approve one. */
 export function validateGenesis(genesis: string): void {
   if (typeof genesis !== "string" || new PublicKey(genesis).toBase58() !== genesis) throw new Error("approved Actions genesis required");
-  if (["EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG", "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d"].includes(genesis)) {
-    throw new Error("V2 Actions has no verified public deployment");
-  }
+  assertDeploymentGenesis(DEPLOYMENT, genesis);
 }
 const increment = (n: number) => Math.min(Number.MAX_SAFE_INTEGER, n + 1);
 export class ActionsOperations {

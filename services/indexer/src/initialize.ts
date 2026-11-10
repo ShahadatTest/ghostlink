@@ -3,13 +3,15 @@ import { mkdirSync, writeFileSync, openSync, fsyncSync, closeSync } from "node:f
 import { randomBytes } from "node:crypto";
 import { join, dirname, resolve } from "node:path";
 import { PublicKey } from "@solana/web3.js";
-import { CENSUS, POCKET, REGISTRY } from "@ghostlink/service-kit";
+import { assertDeploymentGenesis } from "@ghostlink/common";
+import { CENSUS, DEPLOYMENT, POCKET, REGISTRY } from "@ghostlink/service-kit";
 import { IndexerDatabase } from "./database.js";
 
 function main() {
   const [directory, ...extra] = process.argv.slice(2), genesisHash = process.env.INDEXER_GENESIS_HASH;
   if (!directory || extra.length || !genesisHash || new PublicKey(genesisHash).toBase58() !== genesisHash) throw new Error("new directory and approved genesis required");
-  if (["EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG", "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d"].includes(genesisHash)) throw new Error("V2 indexer has no verified public deployment");
+  // Public chains need a deployment manifest with their own programs (GHOSTLINK_DEPLOYMENT).
+  assertDeploymentGenesis(DEPLOYMENT, genesisHash);
   mkdirSync(directory, { mode: 0o700 });
   const key = randomBytes(32), scope = { genesisHash, programs: [REGISTRY, CENSUS, POCKET].map(p => p.toBase58()), commitment: "finalized" };
   const write = (name: string, data: string | Uint8Array) => writeFileSync(join(directory, name), data, { flag: "wx", mode: 0o600, flush: true });

@@ -2,8 +2,8 @@
 import { readFileSync } from "node:fs";
 import { Keypair } from "@solana/web3.js";
 import { createRpcPool, loadRpcEndpoints } from "@ghostlink/service-kit/rpc";
-import { POCKET, REGISTRY, CENSUS } from "@ghostlink/service-kit";
-import { domainHash, fieldToBytes32 } from "@ghostlink/common";
+import { DEPLOYMENT, POCKET, REGISTRY, CENSUS } from "@ghostlink/service-kit";
+import { assertDeploymentGenesis, domainHash, fieldToBytes32 } from "@ghostlink/common";
 import { buildServer } from "./server.js";
 import { RelayerJournal } from "./journal.js";
 import { operatorServer } from "./operations.js";
@@ -15,6 +15,7 @@ async function main() {
   const journalPath = process.env.RELAYER_JOURNAL_PATH, journalKeyPath = process.env.RELAYER_JOURNAL_KEY_PATH;
   const journalId = process.env.RELAYER_JOURNAL_ID;
   if (!keypairPath || !genesisHash || !journalPath || !journalKeyPath || !journalId || !/^[0-9a-f]{64}$/.test(journalId)) throw new Error("relayer payer, chain and pinned journal configuration required");
+  assertDeploymentGenesis(DEPLOYMENT, genesisHash);
   // No automatic migration can prove whether an old ambiguous send was accepted.
   if (process.env.RELAYER_BUDGET_PATH) throw new Error("legacy spend state requires reconciliation before switching to the journal");
   const port = Number(process.env.PORT ?? 8788);

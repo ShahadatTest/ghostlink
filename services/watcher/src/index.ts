@@ -35,7 +35,8 @@ import { createServer } from "node:http";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Connection, Keypair, PublicKey } from "@solana/web3.js";
-import { POCKET, type GhostLinkEvent } from "@ghostlink/service-kit";
+import { assertDeploymentGenesis } from "@ghostlink/common";
+import { DEPLOYMENT, POCKET, type GhostLinkEvent } from "@ghostlink/service-kit";
 import { createRpcPool, loadRpcEndpoints } from "@ghostlink/service-kit/rpc";
 import { CrankJournal } from "./journal.js";
 import { DurableCranker } from "./crank.js";
@@ -274,6 +275,7 @@ async function main() {
   const genesisHash = process.env.WATCHER_GENESIS_HASH, statePath = process.env.WATCHER_STATE_PATH, keyPath = process.env.WATCHER_STATE_KEY_PATH;
   const stateId = process.env.WATCHER_STATE_ID;
   if (!genesisHash || !statePath || !keyPath || !stateId || !/^[0-9a-f]{64}$/.test(stateId)) throw new Error("approved watcher chain, durable state, pinned identity and encryption key are required");
+  assertDeploymentGenesis(DEPLOYMENT, genesisHash);
   const rpc = createRpcPool({ genesisHash, endpoints: loadRpcEndpoints(process.env.RPC_ENDPOINTS_PATH, process.env.RPC_URL) });
   let journal: CrankJournal | undefined, state: WatcherState | undefined;
   const server = createServer();

@@ -7,10 +7,10 @@ import { createServer } from "node:http";
 import { once } from "node:events";
 import { spawn, spawnSync } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
-import { Keypair, Transaction, SystemProgram } from "@solana/web3.js";
+import { Keypair, PublicKey, Transaction, SystemProgram } from "@solana/web3.js";
 import bs58 from "bs58";
-import { POCKET_PROGRAM_ID } from "@ghostlink/common";
 import { SubmissionJournal } from "../src/journal.js";
+import { LOCALNET_DEPLOYMENT, POCKET_PROGRAM_ID, PUBLIC_GENESIS_HASHES } from "@ghostlink/common";
 
 const cleanup: (() => void | Promise<void>)[] = [];
 afterEach(async () => { for (const fn of cleanup.reverse()) await fn(); cleanup.length = 0; });
@@ -159,3 +159,40 @@ it("provisions a fresh solver once without adopting an existing payer and starts
   expect(init(publicTarget, "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d").status).toBe(1); expect(existsSync(publicTarget)).toBe(false);
   expect(w.sends()).toBe(0);
 }, 30000);
+
+it("provisions and starts under a non-default deployment manifest and refuses mismatched deployments", async () => {
+  const w = await fixture(), cli = join(process.cwd(), "dist/initialize.js");
+  const id = (byte: number) => new PublicKey(new Uint8Array(32).fill(byte)).toBase58();
+  const ids = { registryProgram: id(1), censusProgram: id(2), pocketProgram: id(3) };
+  const manifest = (name: string, fields: Record<string, unknown>) => {
+    const path = join(w.dir, `${name}.json`);
+    writeFileSync(path, JSON.stringify({ version: 1, ...ids, verifyingKeys: LOCALNET_DEPLOYMENT.verifyingKeys, ...fields }));
+    return path;
+  };
+  const local = manifest("local", { cluster: "localnet" });
+  const devnet = manifest("devnet", { cluster: "devnet", genesisHash: PUBLIC_GENESIS_HASHES.devnet });
+  const builtinDevnet = manifest("builtin-devnet", { cluster: "devnet", genesisHash: PUBLIC_GENESIS_HASHES.devnet,
+    registryProgram: LOCALNET_DEPLOYMENT.registryProgram, censusProgram: LOCALNET_DEPLOYMENT.censusProgram, pocketProgram: LOCALNET_DEPLOYMENT.pocketProgram });
+  const init = (target: string, deployment: string, genesis = w.genesis) => spawnSync(process.execPath, [cli, target], {
+    env: { ...w.env, SOLVER_GENESIS_HASH: genesis, GHOSTLINK_DEPLOYMENT: deployment }, encoding: "utf8", timeout: 10000, windowsHide: true,
+  });
+  const directory = join(w.dir, "custom");
+  const result = init(directory, local); expect(result.status, result.stderr).toBe(0);
+  const d = JSON.parse(readFileSync(join(directory, "deployment.json"), "utf8"));
+  expect(d.scope.pocketProgram).toBe(ids.pocketProgram);
+  const config = { GHOSTLINK_SOLVER_KEYPAIR: join(directory, d.files.payer), SOLVER_JOURNAL_KEY_PATH: join(directory, d.files.storageKey),
+    SOLVER_JOURNAL_PATH: join(directory, d.files.journal), SOLVER_JOURNAL_ID: d.journalId };
+  const started = await w.start({ ...config, GHOSTLINK_DEPLOYMENT: local }); expect(started.started, started.output).toBe(true); await started.stop();
+  // The same state under the built-in programs is another deployment's state.
+  expect((await w.start({ ...config, GHOSTLINK_DEPLOYMENT: devnet })).code).toBe(1);
+  const builtin = { ...config }; expect((await w.start(builtin)).code).toBe(1);
+  // A public chain needs its own manifest: accepted with one, refused with the built-in IDs or another chain's genesis.
+  const publicTarget = join(w.dir, "devnet-chain");
+  const accepted = init(publicTarget, devnet, PUBLIC_GENESIS_HASHES.devnet); expect(accepted.status, accepted.stderr).toBe(0);
+  for (const [deployment, genesis] of [[builtinDevnet, PUBLIC_GENESIS_HASHES.devnet], [devnet, PUBLIC_GENESIS_HASHES["mainnet-beta"]],
+    [local, PUBLIC_GENESIS_HASHES.devnet], [join(w.dir, "missing.json"), w.genesis]] as const) {
+    const target = join(w.dir, `refused-${Math.random().toString(16).slice(2)}`);
+    expect(init(target, deployment, genesis).status).toBe(1); expect(existsSync(target)).toBe(false);
+  }
+  expect(w.sends()).toBe(0);
+}, 60000);
