@@ -5,9 +5,11 @@
  * only to set up a wallet and check chain effects:
  *
  *   1. every service answers /ready
- *   2. a fresh wallet registers through the relayer (POST /register)
+ *   2. a fresh wallet registers through the relayer (POST /register, sent
+ *      by the SDK's `register`)
  *   3. the relayer takes a census snapshot of the wallet's token account
- *      (POST /snapshot) and the census fee vault gains exactly the fee
+ *      (POST /snapshot, sent by the SDK's `snapshot`) and the census fee
+ *      vault gains exactly the fee
  *   4. the indexer serves the wallet's binding and its snapshot once their
  *      root buckets end and the history is finalized
  *
@@ -18,9 +20,9 @@
 import { Connection, Keypair, PublicKey, SystemProgram, Transaction, type TransactionInstruction } from "@solana/web3.js";
 import { ed25519 } from "@noble/curves/ed25519";
 import { assertDeploymentGenesis, bytesToHex, fieldToBytes32 } from "@ghostlink/common";
-import { RelayerClient, buildRegistration, deriveIdentity, prepareRelayerOperation, type PreparedRelayerOperation } from "@ghostlink/sdk";
+import { GhostLink, deriveIdentity, jsonRpcChainReader } from "@ghostlink/sdk";
 import {
-  DEPLOYMENT, REGISTRY, ataAddress, censusConfigPda, censusFeeVaultPda, createAtaIdempotentIx, initializeMint2Ix, mintToIx,
+  DEPLOYMENT, ataAddress, censusConfigPda, censusFeeVaultPda, createAtaIdempotentIx, initializeMint2Ix, mintToIx,
   readCensusFee,
 } from "@ghostlink/service-kit";
 
@@ -77,34 +79,22 @@ async function main() {
   ], [mint]);
   ok(`wallet ${wallet.publicKey.toBase58()} holds 150 test tokens`);
 
-  // ---- relayer: register and snapshot --------------------------------------
-  const relayer = new RelayerClient(urls.RELAYER!);
-  const settle = async (operation: PreparedRelayerOperation) => {
-    let receipt = await relayer.submit(operation);
-    const deadline = Date.now() + 90_000;
-    while (!["confirmed", "finalized", "failed"].includes(receipt.state)) {
-      if (Date.now() > deadline) throw new Error(`relayer ${operation.route} did not settle`);
-      await sleep(500);
-      receipt = await relayer.status(operation.requestIdHex);
-      if (receipt.state === "pending" || receipt.state === "preparing") receipt = await relayer.submit(operation);
-    }
-    if (receipt.state === "failed") throw new Error(`relayer ${operation.route} failed on chain`);
-    return receipt;
-  };
-  const signMessage = async (message: Uint8Array) => ed25519.sign(message, wallet.secretKey.subarray(0, 32));
+  // ---- relayer: register and snapshot, through the SDK ---------------------
   // A reserved test domain (RFC 6761).
-  const identity = await deriveIdentity(signMessage, { cluster: "devnet", domain: "selfhost.ghostlink.test", address: wallet.publicKey.toBase58() });
-  const registration = await buildRegistration(identity, wallet.publicKey.toBytes(), REGISTRY.toBytes(), "devnet", signMessage);
-  await settle(prepareRelayerOperation("/register", { walletPubkey: wallet.publicKey.toBase58(), messageHex: bytesToHex(registration.message),
-    signatureHex: bytesToHex(registration.signature), commitmentHex: bytesToHex(fieldToBytes32(identity.commitment)) }));
-  ok("registered through the relayer's POST /register");
+  const origin = "https://selfhost.ghostlink.test";
+  const client = await GhostLink.init({ cluster: DEPLOYMENT.cluster, deployment: DEPLOYMENT, indexer: urls.INDEXER!, relayer: urls.RELAYER!,
+    solver: urls.SOLVER!, actions: urls.ACTIONS!, origin, chain: jsonRpcChainReader(rpc) });
+  const signMessage = async (message: Uint8Array) => ed25519.sign(message, wallet.secretKey.subarray(0, 32));
+  const identity = await deriveIdentity(signMessage, { cluster: "devnet", domain: new URL(origin).host, address: wallet.publicKey.toBase58() });
+  await client.register({ identity, wallet: wallet.publicKey.toBytes(), signMessage });
+  ok("registered through the relayer's POST /register (GhostLink.register)");
 
   const fee = readCensusFee(await connection.getAccountInfo(censusConfigPda(), "confirmed"));
   const vaultBefore = BigInt(await connection.getBalance(censusFeeVaultPda(), "confirmed"));
-  await settle(prepareRelayerOperation("/snapshot", { wallet: wallet.publicKey.toBase58(), holding: holding.toBase58() }));
+  await client.snapshot({ wallet: wallet.publicKey.toBytes(), holding: holding.toBytes() });
   const gained = BigInt(await connection.getBalance(censusFeeVaultPda(), "confirmed")) - vaultBefore;
   if (gained !== fee) throw new Error(`the census fee vault gained ${gained} lamports, expected the ${fee}-lamport snapshot fee`);
-  ok(`census snapshot through the relayer's POST /snapshot; the fee vault collected the ${fee}-lamport fee`);
+  ok(`census snapshot through the relayer's POST /snapshot (GhostLink.snapshot); the fee vault collected the ${fee}-lamport fee`);
 
   // ---- indexer: binding and snapshot, once finalized and their buckets end ----
   const wait = async (what: string, path: string) => {
