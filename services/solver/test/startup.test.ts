@@ -63,6 +63,52 @@ async function fixture() {
 const scopeFor = (w: Awaited<ReturnType<typeof fixture>>) => ({ genesisHash: w.genesis,
   solver: w.payer.publicKey.toBase58(), pocketProgram: POCKET_PROGRAM_ID });
 
+it.each([
+  ["SOLVER_MAX_SPREAD_BPS", "1OO"],
+  ["SOLVER_MAX_SPREAD_BPS", "10001"],
+  ["SOLVER_MAX_COMPUTE_UNITS", "0"],
+  ["SOLVER_MAX_COMPUTE_UNITS", "1400001"],
+  ["SOLVER_MAX_COMPUTE_UNITS", "1.5"],
+  ["SOLVER_MIN_BALANCE_LAMPORTS", "-1"],
+  ["SOLVER_MIN_BALANCE_LAMPORTS", "9007199254740992"],
+  ["SOLVER_MIN_BALANCE_LAMPORTS", "19999"],
+  ["SOLVER_PRIORITY_MICRO_LAMPORTS", "18446744073709551616"],
+  ["SOLVER_PRIORITY_MICRO_LAMPORTS", "20000"],
+  ["SOLVER_MAX_NETWORK_FEE_LAMPORTS", "0"],
+  ["SOLVER_MAX_NETWORK_FEE_LAMPORTS", "0x10"],
+  ["JUPITER_SLIPPAGE_BPS", "501"],
+  ["PRICE_ACCOUNTS", "{private-config-value"],
+  ["PRICE_ACCOUNTS", "null"],
+  ["PRICE_ACCOUNTS", "[]"],
+  ["PRICE_ACCOUNTS", '{"11111111111111111111111111111111":42}'],
+  ["PRICE_ACCOUNTS", '{"private-config-value":"11111111111111111111111111111111"}'],
+  ["PRICE_ACCOUNTS", '{"11111111111111111111111111111111":"2"}'],
+])("refuses invalid solver startup setting %s (%s) before opening files", async (name, value) => {
+  const w = await fixture();
+  const result = await w.start({
+    GHOSTLINK_SOLVER_KEYPAIR: join(w.dir, "missing-payer.json"),
+    ...(name === "JUPITER_SLIPPAGE_BPS" ? { SOLVER_ROUTER: "jupiter-raydium-cp" } : {}),
+    [name]: value,
+  });
+  expect(result.code).toBe(1);
+  expect(result.output).toContain("solver startup failed: " + name);
+  expect(result.output).not.toContain("private-config-value");
+  expect(result.output).not.toContain("missing-payer.json");
+}, 20000);
+
+it("rejects a mistyped quote spread even when the journal and RPC are valid", async () => {
+  const w = await fixture();
+  const journal = new SubmissionJournal(w.path, w.key, scopeFor(w));
+  const journalId = journal.instanceId!;
+  journal.close();
+  const result = await w.start({ SOLVER_JOURNAL_ID: journalId, SOLVER_MAX_SPREAD_BPS: "1OO" });
+  await result.stop();
+  expect(result.started).toBe(false);
+  expect(result.code).toBe(1);
+  expect(result.output).toContain("solver startup failed: SOLVER_MAX_SPREAD_BPS");
+  expect(result.output).not.toContain("1OO");
+}, 20000);
+
 it("refuses a missing journal instead of silently forgetting transaction identity", async () => {
   const w = await fixture(), result = await w.start();
   await result.stop();
@@ -153,7 +199,10 @@ it("provisions a fresh solver once without adopting an existing payer and starts
   if (process.platform !== "win32") for (const file of [directory, payerFile, keyFile]) expect(statSync(file).mode & 0o077).toBe(0);
   expect(init(directory).status).toBe(1); expect(readFileSync(payerFile)).toEqual(payerBytes); expect(readFileSync(keyFile)).toEqual(keyBytes);
   const started = await w.start({ GHOSTLINK_SOLVER_KEYPAIR: payerFile, SOLVER_JOURNAL_KEY_PATH: keyFile,
-    SOLVER_JOURNAL_PATH: join(directory, deployment.files.journal), SOLVER_JOURNAL_ID: deployment.journalId });
+    SOLVER_JOURNAL_PATH: join(directory, deployment.files.journal), SOLVER_JOURNAL_ID: deployment.journalId,
+    SOLVER_MAX_SPREAD_BPS: "0", SOLVER_MAX_COMPUTE_UNITS: "1", SOLVER_MAX_NETWORK_FEE_LAMPORTS: "20000",
+    SOLVER_MIN_BALANCE_LAMPORTS: "20000", SOLVER_PRIORITY_MICRO_LAMPORTS: "1000000",
+    PRICE_ACCOUNTS: JSON.stringify({ [w.payer.publicKey.toBase58()]: "11111111111111111111111111111111" }) });
   expect(started.started).toBe(true); await started.stop();
   const publicTarget = join(w.dir, "public-chain");
   expect(init(publicTarget, "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d").status).toBe(1); expect(existsSync(publicTarget)).toBe(false);

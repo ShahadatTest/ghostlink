@@ -31,7 +31,7 @@ import {
 import { buildServer, MockPlanner } from "./server.js";
 import { SubmissionJournal } from "./journal.js";
 import { DEPLOYMENT, POCKET } from "@ghostlink/service-kit";
-import { DEFAULT_TRANSACTION_LIMITS } from "./transactions.js";
+import { readSolverConfig } from "./config.js";
 import { JupiterPlanner } from "./jupiter.js";
 import { operatorServer } from "./operations.js";
 
@@ -48,12 +48,7 @@ async function main(): Promise<void> {
   distinctPorts({ PORT: port, OPERATIONS_PORT: operationsPort });
   const router = env.SOLVER_ROUTER ?? "inventory";
   if (router !== "inventory" && router !== "jupiter-raydium-cp") throw new StartupError("SOLVER_ROUTER must be inventory or jupiter-raydium-cp");
-  let priceAccounts: Record<string, string> = {};
-  if (env.PRICE_ACCOUNTS) {
-    try { priceAccounts = JSON.parse(env.PRICE_ACCOUNTS) as Record<string, string>; } catch {
-      throw new StartupError("PRICE_ACCOUNTS must be a JSON object mapping mint addresses to price update accounts");
-    }
-  }
+  const config = readSolverConfig(env, router === "jupiter-raydium-cp");
   const keypair = readKeypair("GHOSTLINK_SOLVER_KEYPAIR", keypairPath);
   const rpc = openRpc(env, genesisHash);
   const connection = rpc.connection;
@@ -72,7 +67,7 @@ async function main(): Promise<void> {
   const planner = router === "inventory" ? new MockPlanner() : new JupiterPlanner(connection, {
     apiKey: privateText("JUPITER_API_KEY_PATH", 512),
     pools: pools as ConstructorParameters<typeof JupiterPlanner>[1]["pools"],
-    slippageBps: Number(env.JUPITER_SLIPPAGE_BPS ?? 50),
+    slippageBps: config.jupiterSlippageBps,
   });
   const journalKey = readStorageKey("SOLVER_JOURNAL_KEY_PATH", journalKeyPath);
   let journal: SubmissionJournal;
@@ -87,17 +82,13 @@ async function main(): Promise<void> {
     keypair,
     planner,
     journal,
-    transactionLimits: {
-      maxComputeUnits: Number(process.env.SOLVER_MAX_COMPUTE_UNITS ?? DEFAULT_TRANSACTION_LIMITS.maxComputeUnits),
-      priorityMicroLamports: BigInt(process.env.SOLVER_PRIORITY_MICRO_LAMPORTS ?? DEFAULT_TRANSACTION_LIMITS.priorityMicroLamports),
-      maxNetworkFeeLamports: BigInt(process.env.SOLVER_MAX_NETWORK_FEE_LAMPORTS ?? DEFAULT_TRANSACTION_LIMITS.maxNetworkFeeLamports),
-    },
-    priceAccounts,
-    maxQuoteSpreadBps: process.env.SOLVER_MAX_SPREAD_BPS ? Number(process.env.SOLVER_MAX_SPREAD_BPS) : undefined,
-    allowUnpriced: process.env.SOLVER_ALLOW_UNPRICED === "1",
-    createPocketAta: process.env.SOLVER_CREATE_POCKET_ATA === "1",
-    trustProxy: process.env.TRUST_PROXY === "1",
-    minimumBalanceLamports: Number(process.env.SOLVER_MIN_BALANCE_LAMPORTS ?? 5_000_000),
+    transactionLimits: config.transactionLimits,
+    priceAccounts: config.priceAccounts,
+    maxQuoteSpreadBps: config.maxQuoteSpreadBps,
+    allowUnpriced: env.SOLVER_ALLOW_UNPRICED === "1",
+    createPocketAta: env.SOLVER_CREATE_POCKET_ATA === "1",
+    trustProxy: env.TRUST_PROXY === "1",
+    minimumBalanceLamports: config.minimumBalanceLamports,
   });
   const operator = operatorServer(server.operations, rpc.status);
   let stopping = false;

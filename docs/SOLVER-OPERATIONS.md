@@ -23,7 +23,7 @@ The pin detects missing/substituted state, not authentic rollback of the same jo
 
 ## Configuration
 
-These are all the variables `services/solver/src/index.ts` reads. Keep paths, keys and provider credentials outside source control.
+Keep paths, keys and provider credentials outside source control. The solver checks its numeric settings and price account map at startup. Use decimal integers for compute, fee, balance, spread and slippage settings. Invalid settings are reported by variable name without printing their values.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
@@ -37,18 +37,18 @@ These are all the variables `services/solver/src/index.ts` reads. Keep paths, ke
 | `RPC_URL` | `http://127.0.0.1:8899` | Single approved provider when no endpoint file is configured. |
 | `PORT` | 8789 | Public HTTP listener. |
 | `OPERATIONS_PORT` | 18789 | Private metrics listener on `127.0.0.1`; must differ from `PORT`. |
-| `SOLVER_MIN_BALANCE_LAMPORTS` | 5,000,000 | Operational reserve required for readiness; must be at least `SOLVER_MAX_NETWORK_FEE_LAMPORTS`, otherwise startup fails. |
-| `SOLVER_MAX_COMPUTE_UNITS` | 1,400,000 | Compute ceiling for the complete fill, 1–1,400,000. The final limit is 120% of the simulated use, and a fill that needs more than the ceiling is refused. Checked when each intent is prepared, so an invalid value refuses every intent. |
-| `SOLVER_PRIORITY_MICRO_LAMPORTS` | 0 | Operator-fixed compute-unit price (u64 micro-lamports). Planners cannot add compute or priority instructions. The priority fee at the compute ceiling must fit within `SOLVER_MAX_NETWORK_FEE_LAMPORTS`. A non-integer value stops startup. |
-| `SOLVER_MAX_NETWORK_FEE_LAMPORTS` | 20,000 | Ceiling for the complete message's network fee (base plus priority). It excludes rent, token movements and protocol charges. Must be positive; a non-integer value stops startup. |
-| `PRICE_ACCOUNTS` | `{}` | JSON object mapping a mint (base58) to the Pyth `PriceUpdateV2` account (base58) the solver reads to value that leg. Each account must be the sponsored push-feed account of its feed (the push oracle's shard-0 PDA, `pythPushFeedAddress` in `@ghostlink/common`), owned by the Pyth receiver, fully verified and with a confidence interval of at most 1% of the price; the solver refuses any other account before planning a route. The program separately enforces the feeds pinned in the owner's policy, a 30-second publish age and a 75-slot posting age. When the sponsored update is older, push a fresh one through the push oracle or wait for the next sponsored update ([ADR 0006](adr/0006-pocket-hardening.md)). A mint without an entry is unpriced. Invalid JSON stops startup. |
-| `SOLVER_MAX_SPREAD_BPS` | 100 | How much more than the input's value the solver will deliver, integer 0–10,000. Checked for each priced intent, so an invalid value refuses every priced intent. |
+| `SOLVER_MIN_BALANCE_LAMPORTS` | 5,000,000 | Operational reserve required for readiness, 1–9,007,199,254,740,991 lamports. It must be at least `SOLVER_MAX_NETWORK_FEE_LAMPORTS`, otherwise startup fails. |
+| `SOLVER_MAX_COMPUTE_UNITS` | 1,400,000 | Compute ceiling for the complete fill, 1–1,400,000. The final limit is 120% of the simulated use, and a fill that needs more than the ceiling is refused. The ceiling is also enforced when each intent is prepared. |
+| `SOLVER_PRIORITY_MICRO_LAMPORTS` | 0 | Operator-fixed compute-unit price, 0–18,446,744,073,709,551,615 micro-lamports. Planners cannot add compute or priority instructions. The priority fee at the compute ceiling must fit within `SOLVER_MAX_NETWORK_FEE_LAMPORTS`. |
+| `SOLVER_MAX_NETWORK_FEE_LAMPORTS` | 20,000 | Ceiling for the complete message's network fee (base plus priority). It ranges from 1 to 9,007,199,254,740,991 lamports and excludes rent, token movements and protocol charges. |
+| `PRICE_ACCOUNTS` | `{}` | JSON object mapping a mint (base58) to the Pyth `PriceUpdateV2` account (base58) the solver reads to value that leg. Each account must be the sponsored push-feed account of its feed (the push oracle's shard-0 PDA, `pythPushFeedAddress` in `@ghostlink/common`), owned by the Pyth receiver, fully verified and with a confidence interval of at most 1% of the price; the solver refuses any other account before planning a route. The program separately enforces the feeds pinned in the owner's policy, a 30-second publish age and a 75-slot posting age. When the sponsored update is older, push a fresh one through the push oracle or wait for the next sponsored update ([ADR 0006](adr/0006-pocket-hardening.md)). A mint without an entry is unpriced. Both keys and values must be base58-encoded 32-byte addresses. |
+| `SOLVER_MAX_SPREAD_BPS` | 100 | How much more than the input's value the solver will deliver, integer 0–10,000. Unset or empty uses the default. |
 | `SOLVER_ALLOW_UNPRICED` | off | `1` permits an unpriced leg, but only with the intent-funded `jupiter-raydium-cp` router; the inventory router never qualifies. The owner's policy still applies on chain. |
 | `SOLVER_CREATE_POCKET_ATA` | off | `1` pays rent for a missing pocket output token account. Off by default because that rent later flows to the owner's home on sweep and can be farmed; the funding flow creates the account instead. |
 | `SOLVER_ROUTER` | `inventory` | `inventory` fills from the solver's own token inventory at the intent's terms. `jupiter-raydium-cp` is the experimental single approved Raydium CP hop described in [Jupiter routing](JUPITER-ROUTING.md). Any other value stops startup. |
 | `JUPITER_API_KEY_PATH` | required for Jupiter | Private text file of at most 512 bytes containing the Jupiter API key. |
 | `JUPITER_POOLS_PATH` | required for Jupiter | JSON array of 1–64 explicitly approved classic-SPL pools, at most 32 KiB. |
-| `JUPITER_SLIPPAGE_BPS` | 50 | Fixed quote tolerance for the Jupiter router, integer 0–500. |
+| `JUPITER_SLIPPAGE_BPS` | 50 | Fixed quote tolerance, integer 0–500. Read only when the Jupiter router is selected. |
 | `TRUST_PROXY` | off | `1` takes the per-IP quota address from the **rightmost** `X-Forwarded-For` entry. Enable only behind exactly one reverse proxy that you control and that overwrites the header; otherwise all clients behind a proxy share one address. |
 
 ## Endpoints and admission
